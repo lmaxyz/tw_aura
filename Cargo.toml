@@ -1,0 +1,50 @@
+[package]
+name = "tw_aura"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+    "twitch_stream_lib",
+]
+
+[dependencies]
+twitch_api = {version = "0.7", features = ["helix", "client", "reqwest", "twitch_oauth2"]}
+reqwest = {version = "0.12", default-features = false, features = ["json", "http2", "rustls-tls"]}
+tokio = { version = "1", features = ["full"] }
+image = "0.25"
+eframe = { version = "0.33", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "wayland",
+    "accesskit",
+] }
+futures = "0.3"
+thiserror = "2.0"
+m3u8-rs = "6.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libloading = "0.8"
+
+[profile.release]
+strip = true
+
+[package.metadata.generate-rpm]
+name = "com.lmaxyz.TwAura"
+license = "Apache-2.0"
+summary = "Twitch Client"
+release = "1"
+url = "https://github.com/lmaxyz/tw_aura"
+assets = [
+    { source = "target/release/tw_aura", dest = "/usr/bin/com.lmaxyz.TwAura", mode = "755" },
+    { source = "rpm/com.lmaxyz.TwAura.desktop", dest = "/usr/share/applications/com.lmaxyz.TwAura.desktop", mode = "644" },
+    { source = "rpm/icons/86x86/com.lmaxyz.TwAura.png", dest = "/usr/share/icons/hicolor/86x86/apps/com.lmaxyz.TwAura.png", mode = "644" },
+    { source = "rpm/icons/108x108/com.lmaxyz.TwAura.png", dest = "/usr/share/icons/hicolor/108x108/apps/com.lmaxyz.TwAura.png", mode = "644" },
+    { source = "rpm/icons/128x128/com.lmaxyz.TwAura.png", dest = "/usr/share/icons/hicolor/128x128/apps/com.lmaxyz.TwAura.png", mode = "644" },
+    { source = "rpm/icons/172x172/com.lmaxyz.TwAura.png", dest = "/usr/share/icons/hicolor/172x172/apps/com.lmaxyz.TwAura.png", mode = "644" },
+]
+auto-req = "no"
+
+[patch.crates-io]
+# winit = { git = "https://github.com/lmaxyz/winit", branch = "aurora" }
+glutin = { git = "https://github.com/lmaxyz/glutin", branch = "aurora_device_fix" }

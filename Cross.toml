@@ -1,0 +1,105 @@
+[build]
+pre-build = ["apt update && apt install libdbus-1-dev -y"]
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge"
+dockerfile = "Dockerfile"
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    """apt update && apt install -y \
+    clang libdbus-1-dev:$CROSS_DEB_ARCH \
+    libavutil-dev:$CROSS_DEB_ARCH \
+    libavformat-dev:$CROSS_DEB_ARCH \
+    libavcodec-dev:$CROSS_DEB_ARCH \
+    libswscale-dev:$CROSS_DEB_ARCH \
+    libavfilter-dev:$CROSS_DEB_ARCH \
+    libavdevice-dev:$CROSS_DEB_ARCH \
+    libswresample-dev:$CROSS_DEB_ARCH \
+    autoconf \
+    automake \
+    cmake \
+    git-core \
+    libass-dev:$CROSS_DEB_ARCH \
+    libfreetype6-dev:$CROSS_DEB_ARCH \
+    libgnutls28-dev:$CROSS_DEB_ARCH \
+    libmp3lame-dev:$CROSS_DEB_ARCH \
+    libsdl2-dev:$CROSS_DEB_ARCH \
+    libtool \
+    libva-dev:$CROSS_DEB_ARCH \
+    libvdpau-dev:$CROSS_DEB_ARCH \
+    libvorbis-dev:$CROSS_DEB_ARCH \
+    libxcb1-dev:$CROSS_DEB_ARCH \
+    libxcb-shm0-dev:$CROSS_DEB_ARCH \
+    libxcb-xfixes0-dev:$CROSS_DEB_ARCH \
+    meson \
+    ninja-build \
+    pkg-config \
+    texinfo \
+    yasm \
+    zlib1g-dev \
+    libxml2-dev:$CROSS_DEB_ARCH \
+    libbz2-dev:$CROSS_DEB_ARCH \
+    libgme-dev:$CROSS_DEB_ARCH \
+    libopenmpt-dev:$CROSS_DEB_ARCH \
+    libchromaprint-dev:$CROSS_DEB_ARCH \
+    libbluray-dev:$CROSS_DEB_ARCH \
+    libssh-dev:$CROSS_DEB_ARCH \
+    libvpx-dev:$CROSS_DEB_ARCH \
+    libwebp-dev:$CROSS_DEB_ARCH \
+    liblzma-dev:$CROSS_DEB_ARCH \
+    librsvg2-dev:$CROSS_DEB_ARCH \
+    libgdk-pixbuf2.0-dev:$CROSS_DEB_ARCH \
+    libcairo-dev:$CROSS_DEB_ARCH \
+    libzvbi-dev:$CROSS_DEB_ARCH \
+    libsnappy-dev:$CROSS_DEB_ARCH \
+    libaom-dev:$CROSS_DEB_ARCH \
+    libcodec2-dev:$CROSS_DEB_ARCH \
+    libgsm1-dev:$CROSS_DEB_ARCH \
+    libopenjp2-7-dev:$CROSS_DEB_ARCH \
+    libopus-dev:$CROSS_DEB_ARCH \
+    libshine-dev:$CROSS_DEB_ARCH \
+    libspeex-dev:$CROSS_DEB_ARCH \
+    libtheora-dev:$CROSS_DEB_ARCH \
+    libtwolame-dev:$CROSS_DEB_ARCH \
+    libwavpack-dev:$CROSS_DEB_ARCH \
+    libwebp-dev:$CROSS_DEB_ARCH \
+    libx264-dev:$CROSS_DEB_ARCH \
+    libx265-dev:$CROSS_DEB_ARCH \
+    libxvidcore-dev:$CROSS_DEB_ARCH \
+    libsoxr-dev:$CROSS_DEB_ARCH \
+    libdrm-dev:$CROSS_DEB_ARCH \
+    ocl-icd-opencl-dev:$CROSS_DEB_ARCH
+    """,
+]
+
+[target.armv7-unknown-linux-gnueabihf]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    """apt update && apt install clang libdbus-1-dev:$CROSS_DEB_ARCH \
+    libavutil-dev libavformat-dev libavcodec-dev libavfilter-dev libavdevice-dev \
+    autoconf \
+    build-essential \
+    automake \
+    cmake \
+    git-core \
+    libass-dev:$CROSS_DEB_ARCH \
+    libfreetype6-dev:$CROSS_DEB_ARCH \
+    libgnutls28-dev:$CROSS_DEB_ARCH \
+    libmp3lame-dev:$CROSS_DEB_ARCH \
+    libsdl2-dev:$CROSS_DEB_ARCH \
+    libtool \
+    libva-dev:$CROSS_DEB_ARCH \
+    libvdpau-dev:$CROSS_DEB_ARCH \
+    libvorbis-dev:$CROSS_DEB_ARCH \
+    libxcb1-dev:$CROSS_DEB_ARCH \
+    libxcb-shm0-dev:$CROSS_DEB_ARCH \
+    libxcb-xfixes0-dev:$CROSS_DEB_ARCH \
+    meson \
+    ninja-build \
+    pkg-config \
+    texinfo \
+    wget \
+    yasm \
+    zlib1g-dev -y
+    """,
+]
