@@ -8,6 +8,8 @@ Release:    1
 License:    Apache-2.0
 URL:        https://github.com/lmaxyz
 
+BuildRequires: patchelf
+
 %description
 %{summary}
 
@@ -16,6 +18,7 @@ URL:        https://github.com/lmaxyz
 %build
 
 %install
+patchelf --force-rpath --set-rpath %{_datadir}/%{name}/lib %{name}
 install -Dm 755 %{name} -t %{buildroot}%{_bindir}
 
 desktop-file-install --dir %{buildroot}%{_datadir}/applications %{_sourcedir}/%{name}.desktop
