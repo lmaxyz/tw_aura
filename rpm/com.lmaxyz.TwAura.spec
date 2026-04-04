@@ -3,7 +3,7 @@
 
 Name:       com.lmaxyz.TwAura
 Summary:    Неофициальный клиент для Twitch
-Version:    0.1.0
+Version:    0.2.0
 Release:    1
 License:    Apache-2.0
 URL:        https://github.com/lmaxyz
@@ -28,7 +28,7 @@ install -Dm 644 %{_sourcedir}/icons/108x108/%{name}.png -t %{buildroot}%{_datadi
 install -Dm 644 %{_sourcedir}/icons/128x128/%{name}.png -t %{buildroot}%{_datadir}/icons/hicolor/128x128/apps
 install -Dm 644 %{_sourcedir}/icons/172x172/%{name}.png -t %{buildroot}%{_datadir}/icons/hicolor/172x172/apps
 
-install -Dm 644 %{_sourcedir}/lib/* -t %{buildroot}%{_datadir}/%{name}/lib/
+install -Dm 644 %{_sourcedir}/lib/%{_arch}/* -t %{buildroot}%{_datadir}/%{name}/lib/
 
 %files
 %defattr(-,root,root,-)

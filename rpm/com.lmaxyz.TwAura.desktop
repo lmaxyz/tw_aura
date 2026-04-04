@@ -7,6 +7,6 @@ Name=TwAura
 Name[ru]=TwAura
 
 [X-Application]
-Permissions=Internet;UserDirs
+Permissions=Internet;UserDirs;Audio
 OrganizationName=com.lmaxyz
 ApplicationName=TwAura
