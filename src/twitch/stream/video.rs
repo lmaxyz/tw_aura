@@ -1,7 +1,7 @@
-use ffmpeg_next::{self as ffmpeg, Stream, Rational};
+use ffmpeg_next::{self as ffmpeg, Stream};
 use ffmpeg::codec::context::Context as CodecContext;
 use ffmpeg::decoder::video::Video as VideoDecoder;
-use ffmpeg::{format, frame, picture};
+use ffmpeg::{format, frame};
 use ffmpeg::software::scaling::{context::Context as ScalerContext, flag::Flags};
 
 
@@ -33,6 +33,10 @@ impl Transcoder {
 
     pub fn send_packet_to_decoder(&mut self, packet: &ffmpeg::Packet) -> Result<(), ffmpeg::Error> {
         self.decoder.send_packet(packet)
+    }
+
+    pub fn flush_decoder(&mut self) {
+        self.decoder.flush();
     }
 
     pub fn send_eof_to_decoder(&mut self) {

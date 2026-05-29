@@ -1,29 +1,37 @@
-use std::sync::{Arc, Mutex};
-use std::time::{Instant, Duration};
-use std::collections::VecDeque;
-use std::num::NonZeroUsize;
+use std::time::Instant;
 
 use ring_channel::*;
 
 use ffmpeg_next as ffmpeg;
 use ffmpeg::format::context::Input;
-use ffmpeg::frame::{Video, Audio};
+use ffmpeg::frame::Video;
 
 use crate::twitch::stream::video::Transcoder;
+use crate::twitch::stream::audio_decoder::{AudioChunk, AudioTranscoder};
+use crate::twitch::stream::utils::print_stream_metadata;
 
 pub struct StreamReader {
     input_ctx: Input,
     video_transcoder: Transcoder,
+    audio_transcoder: Option<AudioTranscoder>,
 }
 
 impl StreamReader {
     pub fn new(input_ctx: Input, target_resolution: (usize, usize)) -> Result<Self, ffmpeg::Error> {
         let mut video_transcoder = None;
+        let mut audio_transcoder = None;
+
+        println!("=== StreamReader::new ===");
+        print_stream_metadata(&input_ctx);
+        println!("=========================");
 
         for stream in input_ctx.streams() {
             match stream.parameters().medium() {
                 ffmpeg_next::media::Type::Video => {
                     video_transcoder = Some(Transcoder::new(&stream, target_resolution)?);
+                },
+                ffmpeg_next::media::Type::Audio => {
+                    audio_transcoder = Some(AudioTranscoder::new(&stream)?);
                 },
                 _ => {}
             }
@@ -36,128 +44,100 @@ impl StreamReader {
         Ok(Self {
             input_ctx,
             video_transcoder: video_transcoder.unwrap(),
+            audio_transcoder,
         })
     }
 
-    pub fn run(&mut self, ring_channel_sender: RingSender<ReadEvent>) {
-        let mut v_sync = VideoSync::new(1./90000.);
+    pub fn run(&mut self, video_tx: RingSender<ReadEvent>, audio_tx: RingSender<AudioChunk>) -> Result<(), String> {
+        let mut video_pkt_count = 0u64;
+        let mut video_frame_count = 0u64;
+        let mut audio_pkt_count = 0u64;
+        let mut audio_chunk_count = 0u64;
+
         for (stream, packet) in self.input_ctx.packets() {
-            if let Some(packet_pts) = packet.pts() && v_sync.time_sync(packet_pts) == SyncResult::Drop {
-                println!("Drop packet");
-                continue;
+            if packet.is_corrupt() {
+                println!("Got corrupt packet, restarting stream reader");
+                return Err("Corrupt packet".to_string());
             }
-            let start = Instant::now();
+            let _start = Instant::now();
             match stream.parameters().medium() {
                 ffmpeg_next::media::Type::Video => {
-                    if self.video_transcoder.send_packet_to_decoder(&packet).is_ok() {
-                        if let Ok(frame) = self.video_transcoder.receive_decoded_frames() {
-                            ring_channel_sender.send(ReadEvent::NewFrames(frame)).unwrap();
+                    video_pkt_count += 1;
+
+                    match self.video_transcoder.send_packet_to_decoder(&packet) {
+                        Ok(()) => {
+                            loop {
+                                match self.video_transcoder.receive_decoded_frames() {
+                                    Ok(frame) => {
+                                        video_frame_count += 1;
+                                        if video_tx.send(ReadEvent::NewFrames(frame)).is_err() {
+                                            println!("video_tx disconnected, stopping reader");
+                                            return Ok(());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let msg = e.to_string();
+                                        if !msg.contains("temporarily unavailable") {
+                                            println!("Video decode error: {} (key={})", msg, packet.is_key());
+                                            self.video_transcoder.flush_decoder();
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("Video send_packet error: {:?} (key={})", e, packet.is_key());
+                            self.video_transcoder.flush_decoder();
                         }
                     }
                 },
                 ffmpeg_next::media::Type::Audio => {
-                    // Add audio support
+                    audio_pkt_count += 1;
+                    if let Some(ref mut transcoder) = self.audio_transcoder {
+                        if transcoder.send_packet(&packet).is_ok() {
+                            while let Ok(chunk) = transcoder.receive_and_resample() {
+                                audio_chunk_count += 1;
+                                if audio_tx.send(chunk).is_err() {
+                                    println!("audio_tx disconnected, stopping reader");
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
                 },
-                media_type => {
-                    println!("Non video and audio packet received: {:?}", media_type);
+                _ => {
                     // Skip other packets
                 }
             }
-            if packet.is_corrupt() {
-                println!("Got corrupt packet, need rerun reader");
-                ring_channel_sender.send(ReadEvent::Failed).expect("Failed to send Fail event through ring channel.");
-                break;
-            }
             // println!("Packet processing time: {}", start.elapsed().as_secs_f32());
         }
+        println!(
+            "StreamReader finished. video_packets={}, video_frames={}, audio_packets={}",
+            video_pkt_count, video_frame_count, audio_pkt_count
+        );
+        println!("Audio chunks sent: {}", audio_chunk_count);
+
         self.video_transcoder.send_eof_to_decoder();
-        self.video_transcoder.receive_decoded_frames().unwrap();
+        while let Ok(frame) = self.video_transcoder.receive_decoded_frames() {
+            let _ = video_tx.send(ReadEvent::NewFrames(frame));
+        }
+
+        if let Some(ref mut transcoder) = self.audio_transcoder {
+            transcoder.send_eof();
+            let remaining = transcoder.drain();
+            if !remaining.data.is_empty() {
+                let _ = audio_tx.send(remaining);
+            }
+        }
+
+        Ok(())
     }
 }
 
 #[derive(Clone)]
 pub enum ReadEvent {
     NewFrames(Video),
+    #[allow(dead_code)]
     Failed,
 }
-
-
-#[derive(Clone)]
-struct VideoSync {
-    start_time: Instant,
-    first_pts: i64,
-    time_base: f64, // например 1/90000 для 90kHz
-}
-
-impl VideoSync {
-    fn new(time_base: f64) -> Self {
-        Self {
-            start_time: Instant::now(),
-            first_pts: 0,
-            time_base: time_base,
-        }
-    }
-
-    // Для пропуска отстающих кадров
-    fn time_sync(&mut self, frame_pts: i64) -> SyncResult {
-        if self.first_pts == 0 {
-            self.first_pts = frame_pts;
-            return SyncResult::Display
-        }
-        let relative_pts = frame_pts - self.first_pts;
-        let frame_time = relative_pts as f64 * self.time_base;
-        let elapsed = self.start_time.elapsed().as_secs_f64();
-
-        if elapsed - frame_time > 0.1 { // Кадр отстал больше чем на 500ms
-            println!("DROPPED: {} {}",frame_time, elapsed);
-            return SyncResult::Drop
-        }
-        SyncResult::Display
-    }
-}
-
-#[derive(PartialEq)]
-enum SyncResult {
-    Display,
-    Drop,
-}
-
-
-// #[derive(Clone)]
-// pub struct FramesQueue<T> {
-//     capacity: usize,
-//     frames: Arc<Mutex<VecDeque<T>>>,
-// }
-
-// impl<T> FramesQueue<T> {
-//     pub fn new() -> Self {
-//         let capacity = 420;
-//         FramesQueue {
-//             capacity,
-//             frames: Arc::new(Mutex::new(VecDeque::with_capacity(capacity)))
-//         }
-//     }
-
-//     fn count(&self) -> usize {
-//         self.frames.lock().unwrap().len()
-//     }
-
-//     pub fn with_capacity(capacity: usize) -> Self {
-//         FramesQueue {
-//             capacity,
-//             frames: Arc::new(Mutex::new(VecDeque::with_capacity(capacity)))
-//         }
-//     }
-
-//     pub fn next_frame(&mut self) -> Option<T> {
-//         self.frames.lock().unwrap().pop_front()
-//     }
-
-//     pub fn put_new_frame(&mut self, frame: T) {
-//         let mut frames = self.frames.lock().unwrap();
-//         if frames.len() >= self.capacity {
-//             frames.pop_front();
-//         }
-//         frames.push_back(frame);
-//     }
-// }
