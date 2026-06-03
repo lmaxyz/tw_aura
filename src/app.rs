@@ -24,7 +24,7 @@ impl MyApp {
         );
 
         Self {
-            streamer_login: "stray228".to_owned(),
+            streamer_login: "vika_karter".to_owned(),
             player: None,
             stream_texture,
             pending_frame: Arc::new(Mutex::new(None)),
@@ -40,7 +40,13 @@ impl MyApp {
         #[cfg(not(feature = "aurora"))]
         let is_landscape = false;
 
-        central_panel.show_inside(ui, |ui| {
+        let main_frame = if !self.player.is_none() && is_landscape {
+            egui::Frame::new().fill(Color32::BLACK)
+        } else {
+            egui::Frame::central_panel(ui.style())
+        };
+
+        central_panel.frame(main_frame).show_inside(ui, |ui| {
             if !is_landscape {
                 ui.heading("Twitch Client");
 
@@ -103,7 +109,7 @@ impl MyApp {
             // Обновляем текстуру из UI-потока (thread-safe, никаких блокировок рендера)
             if let Some(player) = self.player.as_ref() {
                 if let Some(frame_data) = self.pending_frame.lock().unwrap().take() {
-                    let res = player.settings.resolution();
+                    let res = player.resolution();
                     let expected = (res.width as usize) * (res.height as usize) * 3;
                     if frame_data.len() == expected {
                         let image_data =
@@ -123,10 +129,18 @@ impl MyApp {
 
             let texture = SizedTexture::new(self.stream_texture.id(), [1280., 720.]);
 
-            egui::Image::new(texture)
-                .bg_fill(Color32::BLACK)
-                .shrink_to_fit()
-                .ui(ui);
+            let player_layout = if is_landscape {
+                egui::Layout::top_down_justified(egui::Align::Center)
+            } else {
+                egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center)
+            };
+
+            ui.with_layout(player_layout, |ui| {
+                egui::Image::new(texture)
+                    .bg_fill(Color32::BLACK)
+                    .shrink_to_fit()
+                    .ui(ui);
+            });
 
             streams_list::streams_list_ui(ui);
         });

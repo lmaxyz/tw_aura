@@ -23,7 +23,7 @@ TwAura (`tw_aura`) — это неофициальный клиент для Twi
 - **Парсинг HLS:** `m3u8-rs`.
 - **Сериализация:** `serde`, `serde_json`.
 - **Обработка изображений:** `image`.
-- **Каналы между потоками:** `ring-channel`.
+- **Каналы между потоками:** `std::sync::mpsc` (SyncSender/Receiver).
 
 ## Структура проекта
 
@@ -36,9 +36,8 @@ src/
     ├── twitch_legacy.rs # Кастомный клиент к Twitch GQL API для получения токена и HLS-плейлиста
     ├── stream/          # Движок воспроизведения потока
     │   ├── mod.rs
-    │   ├── player.rs    # StreamPlayer — управление плеером, синхронизация, кольцевой буфер кадров
-    │   ├── reader.rs    # StreamReader — чтение пакетов из Input FFmpeg и отправка кадров в канал
-    │   ├── video.rs     # Transcoder — декодирование и масштабирование видео через FFmpeg
+    │   ├── player.rs    # StreamPlayer — управление плеером, демукс, синхронизация, потоки декодирования и вывода
+    │   ├── video.rs     # Transcoder — декодирование видео через FFmpeg (без масштабирования)
     │   ├── audio.rs     # AudioStream — вывод аудио через PulseAudio
     │   └── utils.rs     # Вспомогательная печать метаданных потока
     └── ui/              # UI-компоненты
@@ -108,7 +107,18 @@ cross build --release --target armv7-unknown-linux-gnueabihf
 - **Отключенный workspace-член:** `twitch_stream_lib` закомментирован в `[workspace]`; библиотека не участвует в сборке основного приложения.
 - **Жестко закодированные значения:** в коде присутствуют тестовые данные — логин стримера по умолчанию (`"ilame"`), OAuth-токен в `streams_list.rs`, Client-ID Twitch в `twitch_legacy.rs`.
 - **Аудио:** аудио-поток декодируется через FFmpeg, ресемплируется в S16LE 48kHz stereo и воспроизводится через PulseAudio. Ранее использовался тестовый WAV-файл, теперь воспроизводится реальный аудио-поток стрима.
-- **Синхронизация видео:** используется два уровня синхронизации — в `StreamReader` (пропуск пакетов) и в `StreamPlayer` (пропуск кадров с отставанием >500 мс). Кольцевой буфер рассчитан примерно на 7 секунд кадров (`frame_rate * 7`).
+- **Потоки воспроизведения:** движок использует 5 независимых потоков:
+  1. **Demux thread** (`player.rs`) — читает пакеты из FFmpeg `Input`, фильтрует видео по GOP skip. Если видео отстаёт от аудио >500 мс или `sync_channel` заполнен — пропускается весь GOP до следующего keyframe (non-key дропаются через `try_send`, keyframe ждёт блокировкой).
+  2. **Video decode thread** (`player.rs`) — отправляет видео-пакеты в FFmpeg decoder, **скейлит** кадры до RGB24 (lazy init + auto-reinit scaler) и передаёт готовые пиксели в ring buffer.
+  3. **Audio decode thread** (`player.rs`) — декодирует и ресемплирует аудио в S16LE 48kHz stereo.
+  4. **Video output thread** (`player.rs`) — только pacing (`sleep` до `1/fps`) и рендеринг через callback. Scaling убран отсюда, чтобы pacing был точным.
+  5. **Audio feeder thread** (`audio.rs`) — перекачивает PCM из channel в локальный буфер PulseAudio.
+- **Каналы:**
+  - Reader → Video decoder: `std::sync::mpsc::sync_channel(fps)` (~1 секунда пакетов). Используется `try_send` для быстрого GOP-skip.
+  - Reader → Audio decoder: `std::sync::mpsc::sync_channel(60)` пакетов (blocking send).
+  - Video decoder → Video output: `ring_channel(fps * 7)` (7 секунд кадров, overwrite). Output всегда берёт самые свежие кадры.
+  - Audio decoder → Audio output: `std::sync::mpsc::sync_channel(20)` chunks.
+- **Синхронизация:** аудио является эталоном времени (`audio_bytes_consumed / BYTES_PER_SEC`). Видео синхронизируется пропуском GOP, если оно отстаёт >500 мс.
 
 ## Тестирование
 

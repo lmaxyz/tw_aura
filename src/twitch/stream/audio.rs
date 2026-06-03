@@ -1,31 +1,38 @@
 use std::{
     collections::VecDeque,
     ffi::CString,
-    sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}},
-    time::{Duration, Instant},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicI64, AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
 use pulseaudio::{AsPlaybackSource, Client as PAClient, ClientError, PlaybackStream, protocol};
-use ring_channel::RingReceiver;
 use tokio::runtime::Handle;
 
 use super::audio_decoder::AudioChunk;
 
 /// Bytes per second for S16 stereo @ 48kHz = 48000 * 2 channels * 2 bytes = 192000
 const BYTES_PER_SEC: f64 = 48000.0 * 2.0 * 2.0;
-/// 100 ms в байтах
-const TARGET_BUFFER_BYTES: u32 = (BYTES_PER_SEC * 0.1) as u32;
+/// 500 ms в байтах — больший буфер снижает вероятность underflow
+/// при всплесках нагрузки на CPU (долгий video decode).
+const TARGET_BUFFER_BYTES: u32 = (BYTES_PER_SEC * 0.5) as u32;
+const MAX_BUFFER_BYTES: u32 = (BYTES_PER_SEC * 1.0) as u32;
+const PRE_BUFFER_BYTES: u32 = (BYTES_PER_SEC * 0.1) as u32;
 
 struct AudioStreamInner {
     client: PAClient,
     stream_handle: Mutex<Option<PlaybackStream>>,
     pcm_buffer: Mutex<VecDeque<u8>>,
-    bytes_played: AtomicU64,
-    audio_start_time: Mutex<Option<Instant>>,
+    audio_bytes_consumed: AtomicU64,
+    last_audio_pts: AtomicI64,
 }
 
 pub struct AudioStream {
     inner: Arc<AudioStreamInner>,
+    // Runtime должен жить до тех пор, пока AudioStream жив,
+    // иначе Handle станет invalid.
     _runtime: Option<tokio::runtime::Runtime>,
     handle: Handle,
 }
@@ -78,8 +85,8 @@ impl AudioStream {
                 client,
                 stream_handle: Mutex::new(None),
                 pcm_buffer: Mutex::new(VecDeque::with_capacity(262144)),
-                bytes_played: AtomicU64::new(0),
-                audio_start_time: Mutex::new(None),
+                audio_bytes_consumed: AtomicU64::new(0),
+                last_audio_pts: AtomicI64::new(0),
             }),
             _runtime: Some(async_rt),
             handle,
@@ -90,39 +97,38 @@ impl AudioStream {
         let old_stream = self.inner.stream_handle.lock().unwrap().take();
         drop(old_stream);
         self.inner.pcm_buffer.lock().unwrap().clear();
-        self.inner.bytes_played.store(0, Ordering::Relaxed);
-        *self.inner.audio_start_time.lock().unwrap() = None;
+        self.inner.audio_bytes_consumed.store(0, Ordering::Relaxed);
+        self.inner.last_audio_pts.store(0, Ordering::Relaxed);
         println!("AudioStream::stop: stream dropped, buffer cleared");
     }
 
-    /// Момент, когда первые реальные аудио-данные ушли в PA.
-    pub fn audio_start_time(&self) -> Option<Instant> {
-        *self.inner.audio_start_time.lock().unwrap()
+    /// Текущее время аудио воспроизведения в секундах.
+    /// Считается из bytes, реально переданных в PA callback.
+    pub fn audio_clock(&self) -> f64 {
+        self.inner.audio_bytes_consumed.load(Ordering::Relaxed) as f64 / BYTES_PER_SEC
     }
 
-    pub fn start(&self, audio_rx: RingReceiver<AudioChunk>, _audio_time_base: f64) {
+    /// PTS последнего аудио-чанка, полученного фидер-потоком.
+    /// Используется для A/V sync (в timeline потока, а не playback time).
+    pub fn last_audio_pts(&self) -> i64 {
+        self.inner.last_audio_pts.load(Ordering::Relaxed)
+    }
+
+    pub fn start(&self, audio_rx: std::sync::mpsc::Receiver<AudioChunk>, _audio_time_base: f64) {
         println!("AudioStream::start: beginning start sequence");
         self.stop();
 
         let inner = self.inner.clone();
 
-        // Поток, перекачивающий PCM из ring channel в локальный буфер
+        // Поток, перекачивающий PCM из channel в локальный буфер
         std::thread::spawn(move || {
-            let mut tick = 0u64;
             loop {
-                match audio_rx.try_recv() {
+                match audio_rx.recv() {
                     Ok(chunk) => {
                         inner.pcm_buffer.lock().unwrap().extend(chunk.data);
+                        inner.last_audio_pts.store(chunk.pts, Ordering::Relaxed);
                     }
-                    Err(ring_channel::TryRecvError::Empty) => {
-                        tick += 1;
-                        if tick % 500 == 0 {
-                            let buf_len = inner.pcm_buffer.lock().unwrap().len();
-                            println!("Audio feed: pcm_buffer={} bytes (Empty)", buf_len);
-                        }
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                    Err(ring_channel::TryRecvError::Disconnected) => {
+                    Err(_) => {
                         println!("Audio feed: audio_rx disconnected, exiting");
                         break;
                     }
@@ -145,9 +151,9 @@ impl AudioStream {
                 ..Default::default()
             },
             buffer_attr: protocol::stream::BufferAttr {
-                max_length: TARGET_BUFFER_BYTES,
+                max_length: MAX_BUFFER_BYTES,
                 target_length: TARGET_BUFFER_BYTES,
-                pre_buffering: 0,
+                pre_buffering: PRE_BUFFER_BYTES,
                 minimum_request_length: (TARGET_BUFFER_BYTES / 4).max(1),
                 ..Default::default()
             },
@@ -164,15 +170,11 @@ impl AudioStream {
             if to_copy < data.len() {
                 data[to_copy..].fill(0);
             }
-            // Запоминаем момент, когда первые реальные данные ушли в PA
-            if to_copy > 0 {
-                let mut start = inner.audio_start_time.lock().unwrap();
-                if start.is_none() {
-                    *start = Some(Instant::now());
-                    println!("AudioStream: first real data sent to PA");
-                }
-            }
-            inner.bytes_played.fetch_add(to_copy as u64, Ordering::Relaxed);
+            // Count ALL bytes consumed by PulseAudio, including silence,
+            // so that audio_clock() reflects actual playback time.
+            inner
+                .audio_bytes_consumed
+                .fetch_add(data.len() as u64, Ordering::Relaxed);
             data.len()
         };
 
@@ -181,7 +183,9 @@ impl AudioStream {
             println!("AudioStream::start: creating playback stream...");
             match tokio::time::timeout(
                 Duration::from_secs(5),
-                inner.client.create_playback_stream(params, callback.as_playback_source()),
+                inner
+                    .client
+                    .create_playback_stream(params, callback.as_playback_source()),
             )
             .await
             {
