@@ -243,7 +243,6 @@ impl StreamPlayer {
                             });
                         }
 
-                        let mut skip_gop = false;
                         for (stream, packet) in input_ctx.packets() {
                             if cancel_reader.load(Ordering::Relaxed) {
                                 break;
@@ -255,41 +254,9 @@ impl StreamPlayer {
 
                             match stream.parameters().medium() {
                                 ffmpeg_next::media::Type::Video => {
-                                    let video_pkt_pts = packet.pts().unwrap_or(0);
-                                    let video_pkt_pts_sec = video_pkt_pts as f64 * video_time_base;
-                                    let last_audio_pts = audio_stream.last_audio_pts();
-                                    let last_audio_pts_sec =
-                                        last_audio_pts as f64 * audio_time_base;
-                                    let last_video_pts = video_player.last_decoded_pts();
-                                    let last_video_pts_sec =
-                                        last_video_pts as f64 * video_time_base;
-
-                                    println!(
-                                        "Last audio and video pts: {} - {}",
-                                        last_audio_pts_sec, last_video_pts_sec
-                                    );
-                                    // Only skip after decoder has produced at least one frame,
-                                    // to avoid a startup deadlock where we drop non-keyframes
-                                    // before the decoder can output its first frame.
-                                    let decoder_started = last_video_pts > 0;
-                                    if decoder_started
-                                        && video_pkt_pts_sec < last_audio_pts_sec - 1.0
-                                    {
-                                        println!(
-                                            "[SyncSkip] video_pkt={video_pkt_pts_sec:.3}s audio={last_audio_pts_sec:.3}s decoded={last_video_pts_sec:.3}s → skip_gop"
-                                        );
-                                        skip_gop = true;
-                                    }
-                                    if skip_gop && !packet.is_key() {
-                                        println!("[SyncSkip] Skipped non-key pts={video_pkt_pts}");
-                                        continue;
-                                    }
-                                    skip_gop = false;
-
                                     video_player.try_send_packet(packet);
                                 }
                                 ffmpeg_next::media::Type::Audio => {
-                                    println!("audio packet pts: {}", packet.pts().unwrap_or(0));
                                     if audio_pkt_tx.send(packet).is_err() {
                                         break;
                                     }

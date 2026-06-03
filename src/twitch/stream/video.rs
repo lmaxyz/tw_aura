@@ -2,16 +2,14 @@ use std::{
     num::NonZeroUsize,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicI64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 use ffmpeg_next::{
-    self as ffmpeg,
-    format,
-    frame,
+    self as ffmpeg, format, frame,
     software::scaling::{context::Context as ScalerContext, flag::Flags},
 };
 
@@ -26,7 +24,6 @@ use super::video_decoder::Transcoder;
 /// The struct is recreated on each stream reconnect so that decoder state and pacing reset cleanly.
 pub struct VideoStream {
     packet_tx: ring_channel::RingSender<ffmpeg::Packet>,
-    last_decoded_pts: Arc<AtomicI64>,
     cancel: Arc<AtomicBool>,
     _decode_handle: JoinHandle<()>,
     _output_handle: JoinHandle<()>,
@@ -46,9 +43,10 @@ impl VideoStream {
         let (target_width, target_height) = match target_resolution {
             Some(res) => (res.width as u32, res.height as u32),
             None => {
-                let decoder = ffmpeg::codec::context::Context::from_parameters(input_stream.parameters())?
-                    .decoder()
-                    .video()?;
+                let decoder =
+                    ffmpeg::codec::context::Context::from_parameters(input_stream.parameters())?
+                        .decoder()
+                        .video()?;
                 (decoder.width(), decoder.height())
             }
         };
@@ -62,10 +60,8 @@ impl VideoStream {
         let frame_cap = NonZeroUsize::new((frame_rate * 7).max(1) as usize).unwrap();
         let (frame_tx, frame_rx) = ring_channel::ring_channel(frame_cap);
 
-        let last_decoded_pts = Arc::new(AtomicI64::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
 
-        let last_pts_for_decode = last_decoded_pts.clone();
         let cancel_decode = cancel.clone();
         let cancel_output = cancel.clone();
 
@@ -138,6 +134,7 @@ impl VideoStream {
             };
 
             let mut packet_count = 0u64;
+            let mut first_frame_logged = false;
             loop {
                 if cancel_decode.load(Ordering::Relaxed) {
                     break;
@@ -145,50 +142,27 @@ impl VideoStream {
 
                 let packet: ffmpeg::Packet = match packet_rx.recv() {
                     Ok(p) => p,
-                    Err(_) => {
-                        println!("[VideoDecode] packet channel disconnected, exiting");
-                        break;
-                    }
+                    Err(_) => break,
                 };
                 packet_count += 1;
-                let pts = packet.pts().unwrap_or(0);
-                let is_key = packet.is_key();
-                if packet_count <= 10 || packet_count % 60 == 0 {
-                    println!(
-                        "[VideoDecode] recv packet #{} pts={} key={}",
-                        packet_count, pts, is_key
-                    );
-                }
 
                 if let Err(e) = transcoder.send_packet_to_decoder(&packet) {
                     println!("[VideoDecode] send_packet failed: {:?}", e);
                     continue;
                 }
 
-                let mut frame_out_count = 0u32;
                 while let Ok(raw_frame) = transcoder.receive_decoded_frames() {
-                    frame_out_count += 1;
                     let frame_pts = raw_frame.pts().unwrap_or(0);
-                    println!(
-                        "[VideoDecode] decoded frame pts={} (packet #{} pts={})",
-                        frame_pts, packet_count, pts
-                    );
-                    if let Some(pixels) = process_frame(raw_frame) {
-                        last_pts_for_decode.store(frame_pts, Ordering::Relaxed);
-                        match frame_tx.send((pixels, frame_pts)) {
-                            Ok(Some(_)) => println!("[VideoDecode] frame ring full, overwritten old frame"),
-                            Ok(None) => {}
-                            Err(_) => {
-                                println!("[VideoDecode] frame channel disconnected, exiting");
-                                return;
-                            }
-                        }
-                    } else {
-                        println!("[VideoDecode] process_frame returned None, dropped frame pts={}", frame_pts);
+                    if !first_frame_logged {
+                        first_frame_logged = true;
+                        println!(
+                            "[VideoDecode] first frame decoded pts={} after {} packets",
+                            frame_pts, packet_count
+                        );
                     }
-                }
-                if frame_out_count > 0 {
-                    println!("[VideoDecode] packet #{} produced {} frames", packet_count, frame_out_count);
+                    if let Some(pixels) = process_frame(raw_frame) {
+                        let _ = frame_tx.send((pixels, frame_pts));
+                    }
                 }
             }
 
@@ -227,9 +201,9 @@ impl VideoStream {
                 let since_last = now.duration_since(last_frame_instant).as_millis();
                 last_frame_instant = now;
                 frame_count += 1;
-                if frame_count % 30 == 0 {
+                if frame_count % 60 == 0 {
                     println!(
-                        "[VideoOutput] frame #{} received, {} ms since last",
+                        "[VideoOutput] frame #{} displayed, {} ms since last",
                         frame_count, since_last
                     );
                 }
@@ -237,19 +211,13 @@ impl VideoStream {
                 if now < next_frame_time {
                     std::thread::sleep(next_frame_time - now);
                 }
-                let cb_start = Instant::now();
                 new_frame_callback(pixels);
-                let cb_dur = cb_start.elapsed().as_micros();
-                if frame_count % 30 == 0 {
-                    println!("[VideoOutput] callback took {} µs", cb_dur);
-                }
                 next_frame_time += frame_duration;
             }
         });
 
         Ok(Self {
             packet_tx,
-            last_decoded_pts,
             cancel,
             _decode_handle,
             _output_handle,
@@ -267,11 +235,6 @@ impl VideoStream {
                 // All receivers dropped — VideoStream is shutting down.
             }
         }
-    }
-
-    /// Latest decoded video PTS (stream timebase units). Used by the demuxer for coarse A/V sync.
-    pub fn last_decoded_pts(&self) -> i64 {
-        self.last_decoded_pts.load(Ordering::Relaxed)
     }
 
     pub fn stop(&self) {

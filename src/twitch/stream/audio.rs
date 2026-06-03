@@ -102,12 +102,6 @@ impl AudioStream {
         println!("AudioStream::stop: stream dropped, buffer cleared");
     }
 
-    /// Текущее время аудио воспроизведения в секундах.
-    /// Считается из bytes, реально переданных в PA callback.
-    pub fn audio_clock(&self) -> f64 {
-        self.inner.audio_bytes_consumed.load(Ordering::Relaxed) as f64 / BYTES_PER_SEC
-    }
-
     /// PTS последнего аудио-чанка, полученного фидер-потоком.
     /// Используется для A/V sync (в timeline потока, а не playback time).
     pub fn last_audio_pts(&self) -> i64 {
