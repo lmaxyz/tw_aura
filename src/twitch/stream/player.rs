@@ -30,10 +30,12 @@ pub struct StreamPlayer {
     pub settings: PlayerSettings,
     cancel: Arc<AtomicBool>,
     current_resolution: Option<Resolution>,
+    #[cfg(feature = "aurora")]
+    display_wakelock_handler: Option<JoinHandle<()>>,
 }
 
 impl StreamPlayer {
-    pub fn new(streamer_login: &str, preferred_quality: Option<Resolution>) -> Self {
+    pub fn new(streamer_login: &str, preferred_quality: Option<String>) -> Self {
         let master_playlist = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -44,13 +46,13 @@ impl StreamPlayer {
                     .unwrap()
             });
 
-        let selected_stream = if let Some(preferred_quality) = preferred_quality {
+        let selected_stream = if let Some(preferred) = preferred_quality {
             master_playlist
                 .variants
                 .iter()
-                .find(|sv| sv.resolution.map_or(false, |r| r == preferred_quality))
-                .unwrap()
-                .clone()
+                .find(|sv| sv.video.as_ref() == Some(&preferred))
+                .cloned()
+                .unwrap_or_else(|| master_playlist.variants.first().unwrap().clone())
         } else {
             master_playlist.variants.iter().last().unwrap().clone()
         };
@@ -66,15 +68,13 @@ impl StreamPlayer {
             audio_stream,
             cancel: Arc::new(AtomicBool::new(false)),
             current_resolution: None,
+            #[cfg(feature = "aurora")]
+            display_wakelock_handler: None,
         }
     }
 
     pub fn set_stream_variant(&mut self, variant_stream: &VariantStream) {
         self.settings.selected_stream = variant_stream.clone();
-    }
-
-    pub fn playlist(&self) -> &MasterPlaylist {
-        &self.settings.master_playlist
     }
 
     /// Returns the currently active resolution.
@@ -100,6 +100,26 @@ impl StreamPlayer {
 
         let stream_uri = self.settings.selected_stream.uri.clone();
         let preferred_resolution = self.settings.selected_stream.resolution;
+
+        #[cfg(feature = "aurora")]
+        {
+            let wakelock_cancel = cancel.clone();
+            self.display_wakelock_handler = Some(std::thread::spawn(move || {
+                match aurora_services::DisplayService::new() {
+                    Ok(display_service) => loop {
+                        if wakelock_cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        display_service.pause_display_blanking().unwrap();
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                    },
+                    Err(e) => {
+                        println!("Unable to init display service: {:?}", e);
+                        // ToDo: Log wakelock service is not available.
+                    }
+                }
+            }));
+        }
 
         let audio_stream = self.audio_stream.clone();
         let cancel_reader = cancel.clone();
@@ -279,6 +299,8 @@ impl StreamPlayer {
     pub fn stop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         self.stream_reader_handler.take();
+        #[cfg(feature = "aurora")]
+        self.display_wakelock_handler.take();
         self.audio_stream.stop();
     }
 

@@ -83,19 +83,10 @@ impl VideoStream {
                         Flags::FAST_BILINEAR,
                     ) {
                         Ok(s) => {
-                            println!(
-                                "Scaler reinit: {:?} {}x{} -> RGB24 {}x{}",
-                                raw_frame.format(),
-                                raw_frame.width(),
-                                raw_frame.height(),
-                                target_width,
-                                target_height,
-                            );
                             scaler = Some(s);
                             last_input_desc = Some(input_desc);
                         }
-                        Err(e) => {
-                            println!("Scaler init failed: {:?}", e);
+                        Err(_) => {
                             return None;
                         }
                     }
@@ -105,7 +96,6 @@ impl VideoStream {
                 scaled_frame.set_pts(raw_frame.pts());
                 if let Some(ref mut s) = scaler {
                     if s.run(&raw_frame, &mut scaled_frame).is_err() {
-                        println!("Scaling failed");
                         return None;
                     }
                 }
@@ -116,11 +106,6 @@ impl VideoStream {
                 let frame_target_len = target_height as usize * width_in_bytes;
 
                 if frame_target_len > frame_data.len() {
-                    println!(
-                        "Skipped frame: {} vs {}",
-                        frame_data.len(),
-                        frame_target_len,
-                    );
                     return None;
                 }
 
@@ -133,7 +118,6 @@ impl VideoStream {
                 Some(pixels)
             };
 
-            let mut packet_count = 0u64;
             let mut first_frame_logged = false;
             loop {
                 if cancel_decode.load(Ordering::Relaxed) {
@@ -144,10 +128,8 @@ impl VideoStream {
                     Ok(p) => p,
                     Err(_) => break,
                 };
-                packet_count += 1;
 
-                if let Err(e) = transcoder.send_packet_to_decoder(&packet) {
-                    println!("[VideoDecode] send_packet failed: {:?}", e);
+                if let Err(_) = transcoder.send_packet_to_decoder(&packet) {
                     continue;
                 }
 
@@ -155,10 +137,6 @@ impl VideoStream {
                     let frame_pts = raw_frame.pts().unwrap_or(0);
                     if !first_frame_logged {
                         first_frame_logged = true;
-                        println!(
-                            "[VideoDecode] first frame decoded pts={} after {} packets",
-                            frame_pts, packet_count
-                        );
                     }
                     if let Some(pixels) = process_frame(raw_frame) {
                         let _ = frame_tx.send((pixels, frame_pts));
@@ -179,8 +157,6 @@ impl VideoStream {
         let _output_handle = std::thread::spawn(move || {
             let frame_duration = Duration::from_secs_f64(1.0 / frame_rate as f64);
             let mut next_frame_time = Instant::now();
-            let mut last_frame_instant = Instant::now();
-            let mut frame_count = 0u64;
 
             loop {
                 if cancel_output.load(Ordering::Relaxed) {
@@ -198,15 +174,6 @@ impl VideoStream {
 
                 let (pixels, _pts) = frame;
                 let now = Instant::now();
-                let since_last = now.duration_since(last_frame_instant).as_millis();
-                last_frame_instant = now;
-                frame_count += 1;
-                if frame_count % 60 == 0 {
-                    println!(
-                        "[VideoOutput] frame #{} displayed, {} ms since last",
-                        frame_count, since_last
-                    );
-                }
 
                 if now < next_frame_time {
                     std::thread::sleep(next_frame_time - now);

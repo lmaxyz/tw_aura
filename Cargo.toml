@@ -14,6 +14,12 @@ reqwest = {version = "0.12", default-features = false, features = ["json", "http
 tokio = { version = "1", features = ["full"] }
 image = "0.25"
 egui = { version = "0.34.3" }
+egui_extras = { version = "0.34", default-features = false, features = [
+    "image",
+    "http",
+    "gif",
+    "webp",
+] }
 eframe = { version = "0.34.3", default-features = false, features = [
     "glow",
     "default_fonts",
@@ -21,6 +27,8 @@ eframe = { version = "0.34.3", default-features = false, features = [
     "accesskit",
 ], optional = true}
 aurora_egui = { git = "https://github.com/auroraos-rs/aurora-gui", optional = true }
+# aurora_services = { version = "0.1.1", optional = true }
+aurora_services = { git = "https://github.com/auroraos-rs/aurora_services", optional = true }
 futures = "0.3"
 ring-channel = "0.12"
 thiserror = "2.0"
@@ -34,7 +42,7 @@ env_logger = "0.11"
 
 [features]
 default = ["desktop"]
-aurora = ["aurora_egui"]
+aurora = ["aurora_egui", "aurora_services"]
 desktop = ["eframe"]
 
 [profile.release]

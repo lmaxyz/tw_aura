@@ -1,33 +1,37 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
-use egui::{Color32, ColorImage, TextureHandle, TextureOptions, Widget, load::SizedTexture};
+use egui::Color32;
 use ffmpeg_next as ffmpeg;
+use twitch_api::helix::streams::Stream;
 
-use crate::twitch::stream::player::StreamPlayer;
+use crate::config::Config;
+use crate::twitch::ui::auth::AuthView;
+use crate::twitch::ui::player::PlayerView;
 use crate::twitch::ui::streams_list;
 
 pub struct MyApp {
     streamer_login: String,
-    player: Option<StreamPlayer>,
-    stream_texture: TextureHandle,
-    /// Double-buffer для видео-кадров: рендер-поток пишет, UI-поток читает
-    pending_frame: Arc<Mutex<Option<Vec<u8>>>>,
+    player_view: Option<PlayerView>,
+    streams: Arc<RwLock<Vec<Stream>>>,
+    access_token: Option<String>,
+    auth_view: AuthView,
+    last_streams_load: Option<Instant>,
 }
 
 impl MyApp {
-    pub fn new(ctx: &egui::Context) -> Self {
+    pub fn new(_ctx: &egui::Context) -> Self {
         ffmpeg::init().unwrap();
-        let stream_texture = ctx.load_texture(
-            "live_stream",
-            ColorImage::example(),
-            TextureOptions::default(),
-        );
+        let config = Config::load();
+        let access_token = config.and_then(|c| c.access_token);
 
         Self {
-            streamer_login: "vika_karter".to_owned(),
-            player: None,
-            stream_texture,
-            pending_frame: Arc::new(Mutex::new(None)),
+            streamer_login: "".to_string(),
+            player_view: None,
+            streams: Arc::new(RwLock::new(Vec::new())),
+            access_token,
+            auth_view: AuthView::default(),
+            last_streams_load: None,
         }
     }
 
@@ -40,13 +44,30 @@ impl MyApp {
         #[cfg(not(feature = "aurora"))]
         let is_landscape = false;
 
-        let main_frame = if !self.player.is_none() && is_landscape {
+        let main_frame = if self.player_view.is_some() {
             egui::Frame::new().fill(Color32::BLACK)
         } else {
             egui::Frame::central_panel(ui.style())
         };
 
         central_panel.frame(main_frame).show_inside(ui, |ui| {
+            if self.access_token.is_none() {
+                let mut token = None;
+                self.auth_view.ui(ui, &mut token);
+                if let Some(t) = token {
+                    self.access_token = Some(t);
+                }
+                return;
+            }
+
+            if let Some(player_view) = self.player_view.as_mut() {
+                let response = player_view.ui(ui, is_landscape);
+                if response.back_clicked {
+                    self.player_view = None;
+                }
+                return;
+            }
+
             if !is_landscape {
                 ui.heading("Twitch Client");
 
@@ -56,93 +77,42 @@ impl MyApp {
                         .labelled_by(name_label.id);
                 });
 
-                ui.horizontal(|ui| {
-                    if ui.button("Play stream").clicked() {
-                        if self.player.is_none() {
-                            self.player = Some(StreamPlayer::new(&self.streamer_login, None));
-                        }
-
-                        let player = self.player.as_mut().unwrap();
-                        let playlist = player.playlist();
-
-                        for stream in playlist.variants.iter() {
-                            println!("{:?}", stream)
-                        }
-
-                        let pending = self.pending_frame.clone();
-                        let ctx = ui.ctx().clone();
-                        player.play(move |frame_data| {
-                            // Минимальная работа в рендер-потоке: просто кладём кадр и просим репейнт
-                            *pending.lock().unwrap() = Some(frame_data);
-                            ctx.request_repaint();
-                        });
-                    }
-                    if let Some(player) = self.player.as_mut() {
-                        ui.menu_button("Quality", |ui| {
-                            let streams = player.settings.available_streams().clone();
-                            for stream in streams {
-                                if ui
-                                    .radio(
-                                        player.settings.selected_stream == stream,
-                                        stream.video.as_ref().unwrap(),
-                                    )
-                                    .clicked()
-                                {
-                                    player.set_stream_variant(&stream);
-                                    // Перезапускаем воспроизведение с новым качеством
-                                    player.stop();
-                                    // Сбрасываем старый кадр, чтобы не было mismatch разрешения
-                                    *self.pending_frame.lock().unwrap() = None;
-                                    let pending = self.pending_frame.clone();
-                                    let ctx = ui.ctx().clone();
-                                    player.play(move |frame_data| {
-                                        *pending.lock().unwrap() = Some(frame_data);
-                                        ctx.request_repaint();
-                                    });
-                                };
-                            }
-                        });
-                    }
-                });
-            }
-
-            // Обновляем текстуру из UI-потока (thread-safe, никаких блокировок рендера)
-            if let Some(player) = self.player.as_ref() {
-                if let Some(frame_data) = self.pending_frame.lock().unwrap().take() {
-                    let res = player.resolution();
-                    let expected = (res.width as usize) * (res.height as usize) * 3;
-                    if frame_data.len() == expected {
-                        let image_data =
-                            ColorImage::from_rgb([res.width as _, res.height as _], &frame_data);
-                        self.stream_texture
-                            .set(image_data, TextureOptions::default());
-                    } else {
-                        println!(
-                            "Frame size mismatch: expected {} for {:?}, got {}",
-                            expected,
-                            res,
-                            frame_data.len()
-                        );
-                    }
+                if ui.button("Play stream").clicked() {
+                    let preferred = Config::load().and_then(|c| c.last_quality);
+                    self.player_view =
+                        Some(PlayerView::new(ui.ctx(), &self.streamer_login, preferred));
                 }
             }
 
-            let texture = SizedTexture::new(self.stream_texture.id(), [1280., 720.]);
+            // Auto-load followed streams if empty and cooldown passed
+            {
+                let is_empty = self.streams.read().unwrap().is_empty();
+                let should_load = is_empty
+                    && self
+                        .last_streams_load
+                        .map_or(true, |t| t.elapsed().as_secs() >= 30);
+                if should_load {
+                    self.last_streams_load = Some(Instant::now());
+                    let streams = self.streams.clone();
+                    let token = self.access_token.clone().unwrap_or_default();
+                    std::thread::spawn(move || {
+                        let new_streams = streams_list::get_streams(&token);
+                        let mut guard = streams.write().unwrap();
+                        *guard = new_streams;
+                    });
+                }
+            }
 
-            let player_layout = if is_landscape {
-                egui::Layout::top_down_justified(egui::Align::Center)
-            } else {
-                egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center)
-            };
-
-            ui.with_layout(player_layout, |ui| {
-                egui::Image::new(texture)
-                    .bg_fill(Color32::BLACK)
-                    .shrink_to_fit()
-                    .ui(ui);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if let Some(stream) = streams_list::streams_list_ui(ui, self.streams.clone()) {
+                    let preferred = Config::load().and_then(|c| c.last_quality);
+                    self.player_view = Some(PlayerView::new(
+                        ui.ctx(),
+                        stream.user_login.as_str(),
+                        preferred,
+                    ));
+                }
             });
-
-            streams_list::streams_list_ui(ui);
         });
     }
 }
