@@ -10,3 +10,4 @@ Name[ru]=TwAura
 Permissions=Internet;UserDirs;Audio
 OrganizationName=com.lmaxyz
 ApplicationName=TwAura
+# Sandboxing=Disabled
