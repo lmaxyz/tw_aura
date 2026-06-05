@@ -105,7 +105,7 @@ impl PlayerView {
                         if ui
                             .add_sized(
                                 back_size,
-                                egui::Button::new(egui::RichText::new("Back").heading()),
+                                egui::Button::new(egui::RichText::new("Взад").heading()),
                             )
                             .clicked()
                         {
