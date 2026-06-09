@@ -1,105 +1,49 @@
-use std::{
-    collections::VecDeque,
-    ffi::CString,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicI64, AtomicU64, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
-use pulseaudio::{AsPlaybackSource, Client as PAClient, ClientError, PlaybackStream, protocol};
-use tokio::runtime::Handle;
+use libpulse_binding::sample::{Format, Spec};
+use libpulse_binding::stream::Direction;
+use libpulse_simple_binding::Simple;
 
 use super::audio_decoder::AudioChunk;
 
 /// Bytes per second for S16 stereo @ 48kHz = 48000 * 2 channels * 2 bytes = 192000
 const BYTES_PER_SEC: f64 = 48000.0 * 2.0 * 2.0;
-/// 500 ms в байтах — больший буфер снижает вероятность underflow
-/// при всплесках нагрузки на CPU (долгий video decode).
-const TARGET_BUFFER_BYTES: u32 = (BYTES_PER_SEC * 0.5) as u32;
-const MAX_BUFFER_BYTES: u32 = (BYTES_PER_SEC * 1.0) as u32;
-const PRE_BUFFER_BYTES: u32 = (BYTES_PER_SEC * 0.1) as u32;
 
 struct AudioStreamInner {
-    client: PAClient,
-    stream_handle: Mutex<Option<PlaybackStream>>,
-    pcm_buffer: Mutex<VecDeque<u8>>,
     audio_bytes_consumed: AtomicU64,
     last_audio_pts: AtomicI64,
 }
 
 pub struct AudioStream {
     inner: Arc<AudioStreamInner>,
-    // Runtime должен жить до тех пор, пока AudioStream жив,
-    // иначе Handle станет invalid.
-    _runtime: Option<tokio::runtime::Runtime>,
-    handle: Handle,
 }
 
 impl Clone for AudioStream {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            _runtime: None,
-            handle: self.handle.clone(),
         }
     }
 }
 
 impl AudioStream {
-    pub fn new() -> Result<Self, ClientError> {
-        println!("AudioStream::new: connecting to PulseAudio...");
-        let name = CString::new("TwAura").unwrap();
-        let client = match PAClient::from_env(name.clone()) {
-            Ok(client) => {
-                println!("AudioStream::new: connected via env");
-                client
-            }
-            Err(ClientError::ServerUnavailable) => {
-                println!("AudioStream::new: from_env failed, trying fallback socket...");
-                let socket_path = std::env::var("XDG_RUNTIME_DIR")
-                    .ok()
-                    .map(|d| std::path::PathBuf::from(d).join("pulse/native"))
-                    .filter(|p| p.exists());
-
-                if let Some(path) = socket_path {
-                    let socket = std::os::unix::net::UnixStream::connect(&path)
-                        .map_err(|_| ClientError::ServerUnavailable)?;
-                    let cookie =
-                        pulseaudio::cookie_path_from_env().and_then(|p| std::fs::read(p).ok());
-                    PAClient::new_unix(name, socket, cookie)?
-                } else {
-                    return Err(ClientError::ServerUnavailable);
-                }
-            }
-            Err(e) => return Err(e),
-        };
-        let async_rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let handle = async_rt.handle().clone();
+    pub fn new() -> Result<Self, String> {
+        println!("AudioStream::new: initializing...");
         Ok(Self {
             inner: Arc::new(AudioStreamInner {
-                client,
-                stream_handle: Mutex::new(None),
-                pcm_buffer: Mutex::new(VecDeque::with_capacity(262144)),
                 audio_bytes_consumed: AtomicU64::new(0),
                 last_audio_pts: AtomicI64::new(0),
             }),
-            _runtime: Some(async_rt),
-            handle,
         })
     }
 
     pub fn stop(&self) {
-        let old_stream = self.inner.stream_handle.lock().unwrap().take();
-        drop(old_stream);
-        self.inner.pcm_buffer.lock().unwrap().clear();
         self.inner.audio_bytes_consumed.store(0, Ordering::Relaxed);
         self.inner.last_audio_pts.store(0, Ordering::Relaxed);
-        println!("AudioStream::stop: stream dropped, buffer cleared");
+        println!("AudioStream::stop: counters reset");
     }
 
     /// PTS последнего аудио-чанка, полученного фидер-потоком.
@@ -108,18 +52,50 @@ impl AudioStream {
         self.inner.last_audio_pts.load(Ordering::Relaxed)
     }
 
+    #[allow(dead_code)]
+    /// Возвращает текущее время воспроизведения аудио в секундах.
+    pub fn audio_clock(&self) -> f64 {
+        self.inner.audio_bytes_consumed.load(Ordering::Relaxed) as f64 / BYTES_PER_SEC
+    }
+
     pub fn start(&self, audio_rx: std::sync::mpsc::Receiver<AudioChunk>, _audio_time_base: f64) {
         println!("AudioStream::start: beginning start sequence");
         self.stop();
 
         let inner = self.inner.clone();
 
-        // Поток, перекачивающий PCM из channel в локальный буфер
         std::thread::spawn(move || {
+            let spec = Spec {
+                format: Format::S16le,
+                channels: 2,
+                rate: 48000,
+            };
+
+            if !spec.is_valid() {
+                eprintln!("AudioStream::start: invalid sample spec");
+                return;
+            }
+
+            let simple = match create_simple(&spec) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to create PulseAudio connection: {}", e);
+                    return;
+                }
+            };
+
+            println!("AudioStream::start: playback stream created successfully");
+
             loop {
                 match audio_rx.recv() {
                     Ok(chunk) => {
-                        inner.pcm_buffer.lock().unwrap().extend(chunk.data);
+                        if let Err(e) = simple.write(&chunk.data) {
+                            eprintln!("PulseAudio write error: {}", e);
+                            break;
+                        }
+                        inner
+                            .audio_bytes_consumed
+                            .fetch_add(chunk.data.len() as u64, Ordering::Relaxed);
                         inner.last_audio_pts.store(chunk.pts, Ordering::Relaxed);
                     }
                     Err(_) => {
@@ -128,68 +104,54 @@ impl AudioStream {
                     }
                 }
             }
+
+            if let Err(e) = simple.drain() {
+                eprintln!("PulseAudio drain error: {}", e);
+            }
         });
+    }
+}
 
-        let sample_spec = protocol::SampleSpec {
-            format: protocol::SampleFormat::S16Le,
-            channels: 2,
-            sample_rate: 48000,
-        };
-
-        let params = protocol::PlaybackStreamParams {
-            sample_spec,
-            channel_map: protocol::ChannelMap::stereo(),
-            cvolume: Some(protocol::ChannelVolume::muted(2)),
-            flags: protocol::stream::StreamFlags {
-                adjust_latency: true,
-                ..Default::default()
-            },
-            buffer_attr: protocol::stream::BufferAttr {
-                max_length: MAX_BUFFER_BYTES,
-                target_length: TARGET_BUFFER_BYTES,
-                pre_buffering: PRE_BUFFER_BYTES,
-                minimum_request_length: (TARGET_BUFFER_BYTES / 4).max(1),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let inner = self.inner.clone();
-        let callback = move |data: &mut [u8]| {
-            let mut pcm = inner.pcm_buffer.lock().unwrap();
-            let to_copy = std::cmp::min(pcm.len(), data.len());
-            for i in 0..to_copy {
-                data[i] = pcm.pop_front().unwrap();
-            }
-            if to_copy < data.len() {
-                data[to_copy..].fill(0);
-            }
-            // Count ALL bytes consumed by PulseAudio, including silence,
-            // so that audio_clock() reflects actual playback time.
-            inner
-                .audio_bytes_consumed
-                .fetch_add(data.len() as u64, Ordering::Relaxed);
-            data.len()
-        };
-
-        let inner = self.inner.clone();
-        self.handle.spawn(async move {
-            println!("AudioStream::start: creating playback stream...");
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                inner
-                    .client
-                    .create_playback_stream(params, callback.as_playback_source()),
-            )
-            .await
-            {
-                Ok(Ok(stream)) => {
-                    println!("AudioStream::start: playback stream created successfully");
-                    *inner.stream_handle.lock().unwrap() = Some(stream);
+fn create_simple(spec: &Spec) -> Result<Simple, libpulse_binding::error::PAErr> {
+    match Simple::new(
+        None,
+        "TwAura",
+        Direction::Playback,
+        None,
+        "Twitch Stream",
+        spec,
+        None,
+        None,
+    ) {
+        Ok(s) => {
+            println!("AudioStream: connected via default server");
+            Ok(s)
+        }
+        Err(e) => {
+            println!(
+                "AudioStream: default connection failed ({}), trying fallback socket...",
+                e
+            );
+            if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+                let path = std::path::PathBuf::from(runtime_dir).join("pulse/native");
+                if path.exists() {
+                    let server = format!("unix:{}", path.display());
+                    Simple::new(
+                        Some(&server),
+                        "TwAura",
+                        Direction::Playback,
+                        None,
+                        "Twitch Stream",
+                        spec,
+                        None,
+                        None,
+                    )
+                } else {
+                    Err(e)
                 }
-                Ok(Err(e)) => eprintln!("Failed to create playback stream: {}", e),
-                Err(_) => eprintln!("Timeout creating playback stream"),
+            } else {
+                Err(e)
             }
-        });
+        }
     }
 }
