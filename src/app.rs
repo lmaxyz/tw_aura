@@ -59,9 +59,13 @@ impl MyApp {
 
         #[cfg(feature = "aurora")]
         let is_landscape = frame.is_landscape();
+        #[cfg(feature = "aurora")]
+        let rotation = Some(frame.rotation());
 
         #[cfg(not(feature = "aurora"))]
         let is_landscape = false;
+        #[cfg(not(feature = "aurora"))]
+        let rotation = None;
 
         let main_frame = if self.player_view.is_some() {
             egui::Frame::new().fill(Color32::BLACK)
@@ -71,7 +75,7 @@ impl MyApp {
 
         central_panel.frame(main_frame).show_inside(ui, |ui| {
             if let Some(player_view) = self.player_view.as_mut() {
-                let response = player_view.ui(ui, is_landscape);
+                let response = player_view.ui(ui, is_landscape, rotation);
                 if response.back_clicked {
                     self.player_view = None;
                 }

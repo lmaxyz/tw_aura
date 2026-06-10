@@ -11,6 +11,7 @@ use m3u8_rs::{MasterPlaylist, Resolution, VariantStream};
 
 use super::audio::AudioStream;
 use super::video::VideoStream;
+use super::YuvFrame;
 use crate::twitch::twitch_legacy;
 
 pub struct PlayerSettings {
@@ -29,7 +30,6 @@ pub struct StreamPlayer {
     audio_stream: AudioStream,
     pub settings: PlayerSettings,
     cancel: Arc<AtomicBool>,
-    current_resolution: Option<Resolution>,
     #[cfg(feature = "aurora")]
     display_wakelock_handler: Option<JoinHandle<()>>,
 }
@@ -67,7 +67,6 @@ impl StreamPlayer {
             },
             audio_stream,
             cancel: Arc::new(AtomicBool::new(false)),
-            current_resolution: None,
             #[cfg(feature = "aurora")]
             display_wakelock_handler: None,
         }
@@ -77,21 +76,9 @@ impl StreamPlayer {
         self.settings.selected_stream = variant_stream.clone();
     }
 
-    /// Returns the currently active resolution.
-    /// Falls back to the resolution advertised in the master playlist,
-    /// and finally to 1920×1080 if nothing else is known.
-    pub fn resolution(&self) -> Resolution {
-        self.current_resolution
-            .or(self.settings.selected_stream.resolution)
-            .unwrap_or(Resolution {
-                width: 1920,
-                height: 1080,
-            })
-    }
-
     pub fn play<F>(&mut self, new_frame_cb: F)
     where
-        F: FnMut(Vec<u8>) + Send + 'static,
+        F: FnMut(YuvFrame) + Send + 'static,
     {
         self.stop();
 
@@ -203,9 +190,9 @@ impl StreamPlayer {
                             resolution,
                             frame_rate,
                             video_time_base,
-                            move |pixels| {
+                            move |yuv| {
                                 if let Ok(mut guard) = cb.lock() {
-                                    guard(pixels);
+                                    guard(yuv);
                                 }
                             },
                             move || audio_for_sync.last_audio_pts() as f64 * audio_time_base,

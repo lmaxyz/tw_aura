@@ -8,18 +8,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ffmpeg_next::{
-    self as ffmpeg, format, frame,
-    software::scaling::{context::Context as ScalerContext, flag::Flags},
-};
+use ffmpeg_next::{self as ffmpeg, frame};
 
 use super::video_decoder::Transcoder;
+use super::YuvFrame;
 
-/// Self-contained video pipeline: packet input → decode → scale → paced frame output.
+/// Self-contained video pipeline: packet input → decode → paced frame output.
 ///
 /// Spawns two internal threads:
-/// - **Decode thread**: receives packets, decodes raw frames, scales to RGB24, pushes to ring buffer.
-/// - **Output thread**: pulls scaled frames from ring buffer, paces them at `1/fps`, invokes callback.
+/// - **Decode thread**: receives packets, decodes raw YUV frames, pushes to ring buffer.
+/// - **Output thread**: pulls frames from ring buffer, paces them at `1/fps`, invokes callback.
 ///
 /// The struct is recreated on each stream reconnect so that decoder state and pacing reset cleanly.
 pub struct VideoStream {
@@ -32,31 +30,19 @@ pub struct VideoStream {
 impl VideoStream {
     pub fn new(
         input_stream: &ffmpeg::Stream,
-        target_resolution: Option<m3u8_rs::Resolution>,
+        _target_resolution: Option<m3u8_rs::Resolution>,
         frame_rate: i32,
         _video_time_base: f64,
-        mut new_frame_callback: impl FnMut(Vec<u8>) + Send + 'static,
+        mut new_frame_callback: impl FnMut(YuvFrame) + Send + 'static,
         _get_audio_pts_sec: impl Fn() -> f64 + Send + 'static,
     ) -> Result<Self, ffmpeg::Error> {
         let transcoder = Transcoder::new(input_stream)?;
 
-        let (target_width, target_height) = match target_resolution {
-            Some(res) => (res.width as u32, res.height as u32),
-            None => {
-                let decoder =
-                    ffmpeg::codec::context::Context::from_parameters(input_stream.parameters())?
-                        .decoder()
-                        .video()?;
-                (decoder.width(), decoder.height())
-            }
-        };
-
         // Packet ring: generous capacity so the decoder never starves due to overwrites.
-        // We use ~10 seconds of packets to absorb decode bursts.
         let packet_cap = NonZeroUsize::new((frame_rate * 10).max(120) as usize).unwrap();
         let (packet_tx, packet_rx) = ring_channel::ring_channel(packet_cap);
 
-        // Frame ring: ~7 seconds of scaled frames. Overwrite old frames if output lags.
+        // Frame ring: ~7 seconds of raw frames. Overwrite old frames if output lags.
         let frame_cap = NonZeroUsize::new((frame_rate * 7).max(1) as usize).unwrap();
         let (frame_tx, frame_rx) = ring_channel::ring_channel(frame_cap);
 
@@ -67,55 +53,49 @@ impl VideoStream {
 
         let _decode_handle = std::thread::spawn(move || {
             let mut transcoder = transcoder;
-            let mut scaler: Option<ScalerContext> = None;
-            let mut last_input_desc: Option<(format::Pixel, u32, u32)> = None;
 
-            let mut process_frame = |raw_frame: frame::Video| -> Option<Vec<u8>> {
-                let input_desc = (raw_frame.format(), raw_frame.width(), raw_frame.height());
-                if last_input_desc != Some(input_desc) {
-                    match ScalerContext::get(
-                        raw_frame.format(),
-                        raw_frame.width(),
-                        raw_frame.height(),
-                        format::Pixel::RGB24,
-                        target_width,
-                        target_height,
-                        Flags::FAST_BILINEAR,
-                    ) {
-                        Ok(s) => {
-                            scaler = Some(s);
-                            last_input_desc = Some(input_desc);
-                        }
-                        Err(_) => {
-                            return None;
-                        }
-                    }
-                }
-
-                let mut scaled_frame = frame::Video::empty();
-                scaled_frame.set_pts(raw_frame.pts());
-                if let Some(ref mut s) = scaler {
-                    if s.run(&raw_frame, &mut scaled_frame).is_err() {
-                        return None;
-                    }
-                }
-
-                let frame_data = scaled_frame.data(0);
-                let stride = scaled_frame.stride(0);
-                let width_in_bytes = 3 * target_width as usize;
-                let frame_target_len = target_height as usize * width_in_bytes;
-
-                if frame_target_len > frame_data.len() {
+            let process_frame = |raw_frame: frame::Video| -> Option<YuvFrame> {
+                if raw_frame.format() != ffmpeg::format::Pixel::YUV420P {
+                    // Only YUV420P is supported for zero-copy GPU rendering.
                     return None;
                 }
 
-                let mut pixels = Vec::with_capacity(frame_target_len);
-                for line in 0..scaled_frame.height() as usize {
-                    let begin = line * stride;
-                    let end = begin + width_in_bytes;
-                    pixels.extend_from_slice(&frame_data[begin..end]);
+                let w = raw_frame.width();
+                let h = raw_frame.height();
+                let half_w = w / 2;
+                let half_h = h / 2;
+
+                let mut y = Vec::with_capacity((w * h) as usize);
+                let y_stride = raw_frame.stride(0);
+                let y_data = raw_frame.data(0);
+                for line in 0..h as usize {
+                    let start = line * y_stride;
+                    y.extend_from_slice(&y_data[start..start + w as usize]);
                 }
-                Some(pixels)
+
+                let mut u = Vec::with_capacity((half_w * half_h) as usize);
+                let u_stride = raw_frame.stride(1);
+                let u_data = raw_frame.data(1);
+                for line in 0..half_h as usize {
+                    let start = line * u_stride;
+                    u.extend_from_slice(&u_data[start..start + half_w as usize]);
+                }
+
+                let mut v = Vec::with_capacity((half_w * half_h) as usize);
+                let v_stride = raw_frame.stride(2);
+                let v_data = raw_frame.data(2);
+                for line in 0..half_h as usize {
+                    let start = line * v_stride;
+                    v.extend_from_slice(&v_data[start..start + half_w as usize]);
+                }
+
+                Some(YuvFrame {
+                    width: w,
+                    height: h,
+                    y,
+                    u,
+                    v,
+                })
             };
 
             let mut first_frame_logged = false;
@@ -138,8 +118,8 @@ impl VideoStream {
                     if !first_frame_logged {
                         first_frame_logged = true;
                     }
-                    if let Some(pixels) = process_frame(raw_frame) {
-                        let _ = frame_tx.send((pixels, frame_pts));
+                    if let Some(yuv) = process_frame(raw_frame) {
+                        let _ = frame_tx.send((yuv, frame_pts));
                     }
                 }
             }
@@ -148,8 +128,8 @@ impl VideoStream {
             let _ = transcoder.send_eof();
             while let Ok(raw_frame) = transcoder.receive_decoded_frames() {
                 let pts = raw_frame.pts().unwrap_or(0);
-                if let Some(pixels) = process_frame(raw_frame) {
-                    let _ = frame_tx.send((pixels, pts));
+                if let Some(yuv) = process_frame(raw_frame) {
+                    let _ = frame_tx.send((yuv, pts));
                 }
             }
         });
@@ -172,13 +152,13 @@ impl VideoStream {
                     Err(ring_channel::TryRecvError::Disconnected) => break,
                 };
 
-                let (pixels, _pts) = frame;
+                let (yuv, _pts) = frame;
                 let now = Instant::now();
 
                 if now < next_frame_time {
                     std::thread::sleep(next_frame_time - now);
                 }
-                new_frame_callback(pixels);
+                new_frame_callback(yuv);
                 next_frame_time += frame_duration;
             }
         });

@@ -1,15 +1,16 @@
 use std::sync::{Arc, Mutex};
 
-use egui::{
-    Color32, ColorImage, Rect, TextureHandle, TextureOptions, Vec2, load::SizedTexture, pos2,
-};
+use egui::{Color32, Rect, Vec2, pos2};
+use egui_rotate::Rotation;
 
 use crate::twitch::stream::player::StreamPlayer;
+use crate::twitch::stream::YuvFrame;
+use crate::twitch::ui::yuv_renderer::YuvRenderer;
 
 pub struct PlayerView {
     player: StreamPlayer,
-    stream_texture: TextureHandle,
-    pending_frame: Arc<Mutex<Option<Vec<u8>>>>,
+    yuv_renderer: YuvRenderer,
+    pending_frame: Arc<Mutex<Option<YuvFrame>>>,
     is_playing: bool,
     show_settings: bool,
     overlay_visible: bool,
@@ -25,24 +26,19 @@ impl PlayerView {
         streamer_login: &str,
         preferred_quality: Option<String>,
     ) -> Self {
-        let stream_texture = ctx.load_texture(
-            "live_stream",
-            ColorImage::example(),
-            TextureOptions::default(),
-        );
         let pending_frame = Arc::new(Mutex::new(None));
         let mut player = StreamPlayer::new(streamer_login, preferred_quality);
 
         let pending = pending_frame.clone();
         let ctx = ctx.clone();
-        player.play(move |frame_data| {
-            *pending.lock().unwrap() = Some(frame_data);
+        player.play(move |yuv| {
+            *pending.lock().unwrap() = Some(yuv);
             ctx.request_repaint();
         });
 
         Self {
             player,
-            stream_texture,
+            yuv_renderer: YuvRenderer::new(),
             pending_frame,
             is_playing: true,
             show_settings: false,
@@ -50,29 +46,56 @@ impl PlayerView {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, is_landscape: bool) -> PlayerResponse {
-        self.update_texture(ui.ctx());
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        _is_landscape: bool,
+        rotation: Option<Rotation>,
+    ) -> PlayerResponse {
+        self.yuv_renderer.set_rotation(rotation);
+        self.update_frame();
 
         let available = ui.available_size();
-        let texture = SizedTexture::new(self.stream_texture.id(), [1280., 720.]);
 
+        // Derive landscape from rotation directly — this matches what the renderer uses
+        // for the viewport transform. `egui-rotate` always presents a portrait-shaped
+        // logical screen, so we cannot tell from `available` alone.
+        let is_landscape = matches!(
+            rotation,
+            Some(Rotation::CW90) | Some(Rotation::CW270)
+        );
+
+        // Always preserve 16:9 aspect ratio; never stretch to fill the screen.
+        let aspect = 16.0 / 9.0;
         let image_size = if is_landscape {
-            available
+            // Logical screen is landscape (wider than tall) because egui-rotate
+            // presents a landscape logical canvas when the device is physically
+            // rotated. The video is landscape 16:9, so constrain by height.
+            let h = available.y;
+            let w = h * aspect;
+            Vec2::new(w.min(available.x), h)
         } else {
-            let aspect = 16.0 / 9.0;
+            // Logical screen is portrait. Video is landscape 16:9.
+            // Constrain by width to get full-width / fit-height.
             let w = available.x;
             let h = w / aspect;
             Vec2::new(w, h.min(available.y))
         };
 
-        let image = egui::Image::new(texture)
-            .bg_fill(Color32::BLACK)
-            .fit_to_exact_size(image_size)
-            .sense(egui::Sense::click());
-
         let mut back_clicked = false;
+
         ui.vertical_centered(|ui| {
-            let response = ui.add(image);
+            // Center vertically so the physical viewport is centered regardless
+            // of whether the actual rotation is CW90 or CW270.
+            let y_padding = (available.y - image_size.y).max(0.0) / 2.0;
+            ui.add_space(y_padding);
+
+            let (rect, response) = ui.allocate_exact_size(image_size, egui::Sense::click());
+
+            // Render video via custom GL YUV callback
+            ui.painter()
+                .add(self.yuv_renderer.paint_callback(rect));
+
             if response.clicked() {
                 self.overlay_visible = !self.overlay_visible;
             }
@@ -128,8 +151,8 @@ impl PlayerView {
                             } else {
                                 let pending = self.pending_frame.clone();
                                 let ctx = ui.ctx().clone();
-                                self.player.play(move |frame_data| {
-                                    *pending.lock().unwrap() = Some(frame_data);
+                                self.player.play(move |yuv| {
+                                    *pending.lock().unwrap() = Some(yuv);
                                     ctx.request_repaint();
                                 });
                                 self.is_playing = true;
@@ -161,8 +184,8 @@ impl PlayerView {
                                     self.pending_frame.lock().unwrap().take();
                                     let pending = self.pending_frame.clone();
                                     let ctx = ui.ctx().clone();
-                                    self.player.play(move |frame_data| {
-                                        *pending.lock().unwrap() = Some(frame_data);
+                                    self.player.play(move |yuv| {
+                                        *pending.lock().unwrap() = Some(yuv);
                                         ctx.request_repaint();
                                     });
                                     self.is_playing = true;
@@ -178,23 +201,9 @@ impl PlayerView {
         PlayerResponse { back_clicked }
     }
 
-    fn update_texture(&mut self, _ctx: &egui::Context) {
-        if let Some(frame_data) = self.pending_frame.lock().unwrap().take() {
-            let res = self.player.resolution();
-            let expected = (res.width as usize) * (res.height as usize) * 3;
-            if frame_data.len() == expected {
-                let image_data =
-                    ColorImage::from_rgb([res.width as _, res.height as _], &frame_data);
-                self.stream_texture
-                    .set(image_data, TextureOptions::default());
-            } else {
-                println!(
-                    "Frame size mismatch: expected {} for {:?}, got {}",
-                    expected,
-                    res,
-                    frame_data.len()
-                );
-            }
+    fn update_frame(&mut self) {
+        if let Some(frame) = self.pending_frame.lock().unwrap().take() {
+            self.yuv_renderer.set_frame(frame);
         }
     }
 }

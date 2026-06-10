@@ -509,7 +509,7 @@ dependencies = [
 [[package]]
 name = "aurora_app"
 version = "0.2.0"
-source = "git+https://github.com/auroraos-rs/aurora-gui#18e56b7eef0153233638c55e4d31a2e9e3ac0a70"
+source = "git+https://github.com/auroraos-rs/aurora-gui#4870c8fd487928b30d8cf14f60cb6a91f927f5c3"
 dependencies = [
  "log",
  "maliit",
@@ -519,7 +519,7 @@ dependencies = [
 [[package]]
 name = "aurora_egui"
 version = "0.2.0"
-source = "git+https://github.com/auroraos-rs/aurora-gui#18e56b7eef0153233638c55e4d31a2e9e3ac0a70"
+source = "git+https://github.com/auroraos-rs/aurora-gui#4870c8fd487928b30d8cf14f60cb6a91f927f5c3"
 dependencies = [
  "aurora_app",
  "aurora_services 0.1.1",
@@ -4681,10 +4681,13 @@ dependencies = [
  "aurora_services 0.1.2",
  "eframe",
  "egui",
+ "egui-rotate",
  "egui_extras",
+ "egui_glow",
  "env_logger",
  "ffmpeg-next",
  "futures",
+ "glow",
  "image",
  "libpulse-binding",
  "libpulse-simple-binding",
