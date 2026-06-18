@@ -3,11 +3,6 @@ name = "tw_aura"
 version = "0.2.1"
 edition = "2024"
 
-# [workspace]
-# members = [
-#     "twitch_stream_lib",
-# ]
-
 [dependencies]
 twitch_api = {version = "0.7", features = ["helix", "client", "reqwest", "twitch_oauth2"]}
 reqwest = {version = "0.12", default-features = false, features = ["json", "http2", "rustls-tls"]}

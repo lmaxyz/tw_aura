@@ -2,49 +2,57 @@
 
 ## Обзор проекта
 
-TwAura (`tw_aura`) — это неофициальный клиент для Twitch, написанный на Rust. Приложение умеет воспроизводить видео-потоки стримеров через HLS, отображает GUI с помощью фреймворка egui/eframe и ориентировано в первую очередь на мобильную ОС Аврора (Aurora OS, форк Sailfish OS), а также на десктоп Linux с Wayland.
+TwAura (`tw_aura`) — это неофициальный клиент для Twitch, написанный на Rust. Приложение воспроизводит live-видеопотоки стримеров через HLS, отображает GUI с помощью фреймворка egui (на десктопе — через `eframe`, на Авроре — через `aurora_egui`) и ориентировано в первую очередь на мобильную ОС Аврора (Aurora OS, форк Sailfish OS), а также на десктопный Linux с Wayland.
 
 Основные возможности:
 - Просмотр live-стримов Twitch через HLS-плейлисты.
-- Декодирование видео с помощью FFmpeg (`ffmpeg-next`).
+- Декодирование видео и аудио с помощью FFmpeg (`ffmpeg-next`).
 - Выбор качества видео из вариантов мастер-плейлиста.
-- Базовая синхронизация кадров с пропуском отстающих.
-- Воспроизведение аудио через PulseAudio (в текущей версии используется тестовый WAV-файл).
-- Загрузка списка отслеживаемых стримов через Twitch Helix API.
+- Загрузка списка подписок через Twitch Helix API.
+- Поиск каналов через Twitch Helix API.
+- Воспроизведение аудио через PulseAudio (реальный аудиопоток стрима, раньше использовался тестовый WAV).
+- Поддержка портретной и альбомной ориентации на Aurora OS.
 
 ## Технологический стек
 
 - **Язык:** Rust (edition 2024).
-- **GUI:** `eframe` + `egui` (рендерер Glow, поддержка Wayland).
+- **GUI:** `egui` + `eframe` (десктоп) / `aurora_egui` (Aurora OS), рендерер Glow, поддержка Wayland.
+- **Интеграция с ОС Аврора:** `aurora_services` (wakelock, открытие URI).
 - **Асинхронность:** `tokio` (multi-thread runtime).
 - **HTTP:** `reqwest` (TLS через `rustls`).
 - **Видео/аудио:** `ffmpeg-next` (связка с системным FFmpeg).
-- **Аудиовывод:** `pulseaudio` (нативный клиент PulseAudio).
+- **Аудиовывод:** `libpulse-binding` / `libpulse-simple-binding`.
 - **Парсинг HLS:** `m3u8-rs`.
 - **Сериализация:** `serde`, `serde_json`.
-- **Обработка изображений:** `image`.
-- **Каналы между потоками:** `std::sync::mpsc` (SyncSender/Receiver).
+- **Обработка изображений:** `egui_extras` (загрузка превью через HTTP).
+- **Каналы между потоками:** `std::sync::mpsc` (SyncSender/Receiver) и `ring-channel`.
 
 ## Структура проекта
 
 ```
 src/
-├── main.rs              # Точка входа: инициализация eframe
-├── app.rs               # Главное окно приложения (MyApp), UI-логика
+├── main.rs              # Точка входа: инициализация eframe/aurora_egui
+├── app.rs               # Главное окно приложения (MyApp), UI-логика, вкладки
+├── config.rs            # Локальная конфигурация (access_token, last_quality)
 └── twitch/
     ├── mod.rs           # Объявление подмодулей
-    ├── twitch_legacy.rs # Кастомный клиент к Twitch GQL API для получения токена и HLS-плейлиста
+    ├── twitch_legacy.rs # Кастомный клиент к Twitch GQL API: playback access token и HLS-плейлист
     ├── stream/          # Движок воспроизведения потока
-    │   ├── mod.rs
-    │   ├── player.rs    # StreamPlayer — управление плеером, демукс, синхронизация, потоки декодирования и вывода
-    │   ├── video.rs     # Transcoder — декодирование видео через FFmpeg (без масштабирования)
+    │   ├── mod.rs       # YuvFrame
+    │   ├── player.rs    # StreamPlayer — управление плеером, чтение HLS, запуск потоков
+    │   ├── video.rs     # VideoStream — декодирование видео (YUV420P) и paced-вывод кадров
+    │   ├── video_decoder.rs # Тонкая обёртка над FFmpeg video decoder
     │   ├── audio.rs     # AudioStream — вывод аудио через PulseAudio
+    │   ├── audio_decoder.rs # Декодирование и ресемплинг аудио в S16LE 48kHz stereo
     │   └── utils.rs     # Вспомогательная печать метаданных потока
     └── ui/              # UI-компоненты
         ├── mod.rs
-        └── streams_list.rs  # Список отслеживаемых стримов (Helix API)
+        ├── auth.rs            # Экран ввода access token
+        ├── player.rs          # Окно плеера с оверлейными кнопками и выбором качества
+        ├── streams_list.rs    # Список подписок и поиск каналов (Helix API)
+        └── yuv_renderer.rs    # OpenGL-рендерер YUV420P кадров
 
-twitch_stream_lib/       # Отдельный crate (в данный момент не используется, закомментирован)
+twitch_stream_lib/       # Отдельный crate (не используется, не включён в workspace)
 └── src/lib.rs
 
 rpm/                     # Файлы для сборки RPM-пакета
@@ -103,22 +111,28 @@ cross build --release --target armv7-unknown-linux-gnueabihf
 ## Особенности исходного кода
 
 - **Язык комментариев:** значительная часть комментариев, особенно объясняющих логику синхронизации и работу буферов, написана на русском языке.
-- **Форк зависимостей:** в `Cargo.toml` присутствуют патчи для `winit` и `glutin` из кастомных репозиториев (`lmaxyz/winit`, `lmaxyz/glutin`), необходимые для совместимости с Aurora OS.
-- **Отключенный workspace-член:** `twitch_stream_lib` закомментирован в `[workspace]`; библиотека не участвует в сборке основного приложения.
-- **Жестко закодированные значения:** в коде присутствуют тестовые данные — логин стримера по умолчанию (`"ilame"`), OAuth-токен в `streams_list.rs`, Client-ID Twitch в `twitch_legacy.rs`.
-- **Аудио:** аудио-поток декодируется через FFmpeg, ресемплируется в S16LE 48kHz stereo и воспроизводится через PulseAudio. Ранее использовался тестовый WAV-файл, теперь воспроизводится реальный аудио-поток стрима.
-- **Потоки воспроизведения:** движок использует 5 независимых потоков:
-  1. **Demux thread** (`player.rs`) — читает пакеты из FFmpeg `Input`, фильтрует видео по GOP skip. Если видео отстаёт от аудио >500 мс или `sync_channel` заполнен — пропускается весь GOP до следующего keyframe (non-key дропаются через `try_send`, keyframe ждёт блокировкой).
-  2. **Video decode thread** (`player.rs`) — отправляет видео-пакеты в FFmpeg decoder, **скейлит** кадры до RGB24 (lazy init + auto-reinit scaler) и передаёт готовые пиксели в ring buffer.
-  3. **Audio decode thread** (`player.rs`) — декодирует и ресемплирует аудио в S16LE 48kHz stereo.
-  4. **Video output thread** (`player.rs`) — только pacing (`sleep` до `1/fps`) и рендеринг через callback. Scaling убран отсюда, чтобы pacing был точным.
-  5. **Audio feeder thread** (`audio.rs`) — перекачивает PCM из channel в локальный буфер PulseAudio.
+- **Форк зависимостей:** в `Cargo.toml` присутствуют патчи для `glutin` и `egui`/`eframe` из кастомных репозиториев (`lmaxyz/glutin`, `lmaxyz/egui`), необходимые для совместимости с Aurora OS. Патч для `winit` закомментирован.
+- **Workspace:** в `Cargo.toml` отсутствует секция `[workspace]`; каталог `twitch_stream_lib` не участвует в сборке основного приложения.
+- **Жёстко закодированные значения:**
+  - Twitch `Client-ID` (`kimne78kx3ncx6brgo4mv6wki5h1ko`) и `sha256Hash` persisted query для GQL API — в `src/twitch/twitch_legacy.rs`.
+  - URL страницы авторизации (`https://twitchaddon.page.link/1Sk5`) — в `src/twitch/ui/auth.rs`.
+  - User-Agent для запросов к GQL API — в `src/twitch/twitch_legacy.rs`.
+  - **OAuth access token пользователя больше не зашит в коде:** он вводится на экране авторизации и сохраняется в `~/.local/share/com.lmaxyz/TwAura/tw_aura.conf`.
+- **Аудио:** аудио-поток декодируется через FFmpeg, ресемплируется в S16LE 48kHz stereo и воспроизводится через PulseAudio. Ранее использовался тестовый WAV-файл, теперь воспроизводится реальный аудиопоток стрима.
+- **Видео:** декодер выдаёт сырые кадры в формате YUV420P, которые напрямую передаются в OpenGL-рендерер (`yuv_renderer.rs`). Программное масштабирование до RGB24 и конвертация цветов в CPU отсутствуют.
+- **Потоки воспроизведения:**
+  1. **Stream reader thread** (`player.rs`) — открывает HLS-ссылку через FFmpeg `input_with_interrupt`, читает пакеты и распределяет их по видео- и аудиоканалам. При обрыве/ошибке потока автоматически пытается переподключиться.
+  2. **Video decode thread** (`video.rs`) — получает видеопакеты из `ring_channel`, декодирует их в YUV420P и отправляет готовые кадры в ring buffer.
+  3. **Video output thread** (`video.rs`) — извлекает кадры из ring buffer, выдерживает интервал `1/fps` и вызывает callback для рендеринга.
+  4. **Audio decode thread** (`player.rs`) — декодирует аудиопакеты и ресемплирует их в S16LE 48kHz stereo.
+  5. **Audio feeder thread** (`audio.rs`) — перекачивает PCM-чанки из channel в PulseAudio.
+  6. **Display wakelock thread** (только `feature = "aurora"`, `player.rs`) — предотвращает гашение экрана во время воспроизведения.
 - **Каналы:**
-  - Reader → Video decoder: `std::sync::mpsc::sync_channel(fps)` (~1 секунда пакетов). Используется `try_send` для быстрого GOP-skip.
-  - Reader → Audio decoder: `std::sync::mpsc::sync_channel(60)` пакетов (blocking send).
-  - Video decoder → Video output: `ring_channel(fps * 7)` (7 секунд кадров, overwrite). Output всегда берёт самые свежие кадры.
-  - Audio decoder → Audio output: `std::sync::mpsc::sync_channel(20)` chunks.
-- **Синхронизация:** аудио является эталоном времени (`audio_bytes_consumed / BYTES_PER_SEC`). Видео синхронизируется пропуском GOP, если оно отстаёт >500 мс.
+  - Reader → VideoStream: `ring_channel` с ёмкостью `max(fps * 10, 120)` пакетов. При заполнении старые пакеты перезаписываются.
+  - Reader → Audio decoder: `sync_channel(120)` пакетов.
+  - Video decoder → Video output: `ring_channel(fps * 7)` (около 7 секунд кадров), с перезаписью старых кадров.
+  - Audio decoder → Audio output: `sync_channel(20)` PCM-чанков.
+- **Синхронизация:** в текущей версии активная A/V-синхронизация и GOP-skip отсутствуют. Видео выводится с пейсингом `1/fps`, аудио воспроизводится независимо через PulseAudio. В коде остались заглушки и метрики для будущей синхронизации (`last_audio_pts`, `audio_clock`).
 
 ## Тестирование
 
@@ -133,9 +147,9 @@ cross build --release --target armv7-unknown-linux-gnueabihf
 
 ## Безопасность
 
-- В исходном коде зашиты чувствительные данные: OAuth access token и Twitch Client ID. Необходимо вынести их в переменные окружения или конфигурацию перед публичным распространением.
+- Пользовательский OAuth access token **не зашит** в исходный код. Он вводится в UI и сохраняется в локальном конфиге (`~/.local/share/com.lmaxyz/TwAura/tw_aura.conf`). Перед распространением стоит подумать о защите этого файла.
+- В коде остаются жёстко закодированные публичные константы Twitch: `Client-ID` и `sha256Hash` persisted query в `twitch_legacy.rs`. При изменении со стороны Twitch API их потребуется обновить.
 - Приложение запрашивает разрешения `Internet;UserDirs;Audio` (см. `.desktop`).
-- Для работы с неофициальным GQL API Twitch используется захардкоженный `sha256Hash` persisted query; при изменении со стороны Twitch API потребуется обновление.
 
 ## Особенности запуска в Aurora OS
 
@@ -145,8 +159,8 @@ cross build --release --target armv7-unknown-linux-gnueabihf
 
 ### Подключение к PulseAudio в Aurora OS
 
-- Крейт `pulseaudio` автоматически ищет сокет сервера через `PULSE_SERVER`, `PULSE_RUNTIME_PATH` и `XDG_RUNTIME_DIR/pulse/native`.
-- В Aurora OS sandbox `from_env()` может не сработать из-за проверки прав доступа (`readonly()`) к сокету, поэтому в `AudioStream::new()` реализован **fallback**: если `from_env()` возвращает `ServerUnavailable`, приложение пытается подключиться напрямую к `$XDG_RUNTIME_DIR/pulse/native` без дополнительных проверок прав.
+- Код использует `libpulse-simple-binding` и сначала пытается подключиться к серверу по умолчанию.
+- Если стандартное подключение не сработало, реализован **fallback**: приложение пытается подключиться напрямую к `$XDG_RUNTIME_DIR/pulse/native`.
 - Cookie-файл PulseAudio (`~/.config/pulse/cookie`) в sandbox может отсутствовать; подключение обычно работает и без него (анонимная аутентификация).
 - Приложение запрашивает разрешение `Audio` в `.desktop`-файле; без него доступ к PulseAudio в sandbox будет запрещён.
 
