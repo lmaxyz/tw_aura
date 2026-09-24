@@ -1,8 +1,21 @@
+use std::time::Duration;
+
+use m3u8_rs::{MasterPlaylist, parse_master_playlist_res};
 use reqwest::Client;
 use serde::Deserialize;
 use thiserror::Error;
-use m3u8_rs::{parse_master_playlist_res, MasterPlaylist};
 
+const CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+fn http_client() -> Client {
+    Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent(USER_AGENT)
+        .build()
+        .unwrap_or_default()
+}
 
 #[derive(Debug, Deserialize)]
 pub struct PlaybackAccessToken {
@@ -16,7 +29,7 @@ struct Authorization {
     #[serde(rename = "isForbidden")]
     is_forbidden: bool,
     #[serde(rename = "forbiddenReasonCode")]
-    forbidden_reason_code: String
+    forbidden_reason_code: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,8 +43,9 @@ struct PATResponse {
     data: ResponseData,
 }
 
-
-async fn get_playback_access_token(streamer_login: &str) -> Result<PlaybackAccessToken, TwitchApiError> {
+async fn get_playback_access_token(
+    streamer_login: &str,
+) -> Result<PlaybackAccessToken, TwitchApiError> {
     let query = serde_json::json!({
         "operationName":"PlaybackAccessToken",
         "variables":{
@@ -49,44 +63,55 @@ async fn get_playback_access_token(streamer_login: &str) -> Result<PlaybackAcces
             }
         }
     });
-    let response = Client::new().post("https://gql.twitch.tv/gql")
+    let response = http_client()
+        .post("https://gql.twitch.tv/gql")
         .body(query.to_string())
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-        .header("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko")
-        .send().await?;
+        .header("Client-ID", CLIENT_ID)
+        .send()
+        .await?;
 
     let response_json = response.json::<PATResponse>().await?;
 
     if let Some(stream_playback_access_token) = response_json.data.stream_playback_access_token {
         if stream_playback_access_token.authorization.is_forbidden {
-            return Err(TwitchApiError::PlaybackTokenAuthError(stream_playback_access_token.authorization.forbidden_reason_code))
+            return Err(TwitchApiError::PlaybackTokenAuthError(
+                stream_playback_access_token
+                    .authorization
+                    .forbidden_reason_code,
+            ));
         }
         Ok(stream_playback_access_token)
     } else {
-        Err(TwitchApiError::ApplicationError(format!("No playback token inside response: {:?}", response_json)))
+        Err(TwitchApiError::ApplicationError(format!(
+            "No playback token inside response: {:?}",
+            response_json
+        )))
     }
 }
 
 pub async fn get_streamer_playlist(streamer_login: &str) -> Result<MasterPlaylist, TwitchApiError> {
     let playback_access_token = get_playback_access_token(streamer_login).await?;
-    let url = format!("https://usher.ttvnw.net/api/channel/hls/{}.m3u8?sig={}&token={}", streamer_login, playback_access_token.signature, playback_access_token.value);
-    let response = Client::new().get(url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-        .header("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko")
-        .send().await?;
+    let url = format!(
+        "https://usher.ttvnw.net/api/channel/hls/{}.m3u8?sig={}&token={}",
+        streamer_login, playback_access_token.signature, playback_access_token.value
+    );
+    let response = http_client()
+        .get(url)
+        .header("Client-ID", CLIENT_ID)
+        .send()
+        .await?;
 
     if response.status().is_success() {
         let playlist_bytes = response.bytes().await?;
         if let Ok(playlist) = parse_master_playlist_res(&playlist_bytes) {
-            return Ok(playlist)
+            return Ok(playlist);
         } else {
-            return Err(TwitchApiError::PlaylistParseError)
+            return Err(TwitchApiError::PlaylistParseError);
         }
     }
 
     Err(TwitchApiError::StreamNotFound)
 }
-
 
 #[derive(Error, Debug)]
 pub enum TwitchApiError {
@@ -96,7 +121,7 @@ pub enum TwitchApiError {
     ParseError(#[from] serde_json::Error), // Example for JSON parsing errors
     #[error("Custom application error: {0}")]
     ApplicationError(String),
-    #[error("Stream not found")]
+    #[error("Стример не найден или оффлайн")]
     StreamNotFound,
     #[error("Failed to parse master playlist")]
     PlaylistParseError,

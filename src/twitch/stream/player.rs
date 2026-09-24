@@ -35,16 +35,28 @@ pub struct StreamPlayer {
 }
 
 impl StreamPlayer {
-    pub fn new(streamer_login: &str, preferred_quality: Option<String>) -> Self {
-        let master_playlist = tokio::runtime::Builder::new_multi_thread()
+    /// Fetches the master playlist from Twitch — performs blocking network I/O.
+    /// Must be called from a background thread, never from the UI thread.
+    pub fn new(
+        streamer_login: &str,
+        preferred_quality: Option<String>,
+    ) -> Result<Self, twitch_legacy::TwitchApiError> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .unwrap()
-            .block_on(async {
-                twitch_legacy::get_streamer_playlist(&streamer_login)
-                    .await
-                    .unwrap()
-            });
+            .map_err(|e| {
+                twitch_legacy::TwitchApiError::ApplicationError(format!(
+                    "Failed to create tokio runtime: {e}"
+                ))
+            })?;
+        let master_playlist =
+            runtime.block_on(twitch_legacy::get_streamer_playlist(streamer_login))?;
+
+        if master_playlist.variants.is_empty() {
+            return Err(twitch_legacy::TwitchApiError::ApplicationError(
+                "Master playlist contains no streams".to_string(),
+            ));
+        }
 
         let selected_stream = if let Some(preferred) = preferred_quality {
             master_playlist
@@ -52,24 +64,22 @@ impl StreamPlayer {
                 .iter()
                 .find(|sv| sv.video.as_ref() == Some(&preferred))
                 .cloned()
-                .unwrap_or_else(|| master_playlist.variants.first().unwrap().clone())
+                .unwrap_or_else(|| master_playlist.variants[0].clone())
         } else {
-            master_playlist.variants.iter().last().unwrap().clone()
+            master_playlist.variants[master_playlist.variants.len() - 1].clone()
         };
 
-        let audio_stream = AudioStream::new().expect("Can't create audio streamer");
-
-        StreamPlayer {
+        Ok(StreamPlayer {
             stream_reader_handler: None,
             settings: PlayerSettings {
                 master_playlist,
                 selected_stream,
             },
-            audio_stream,
+            audio_stream: AudioStream::new(),
             cancel: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "aurora")]
             display_wakelock_handler: None,
-        }
+        })
     }
 
     pub fn set_stream_variant(&mut self, variant_stream: &VariantStream) {
@@ -101,8 +111,7 @@ impl StreamPlayer {
                         std::thread::sleep(std::time::Duration::from_secs(30));
                     },
                     Err(e) => {
-                        println!("Unable to init display service: {:?}", e);
-                        // ToDo: Log wakelock service is not available.
+                        log::warn!("Unable to init display service: {e:?}");
                     }
                 }
             }));
@@ -116,7 +125,7 @@ impl StreamPlayer {
         self.stream_reader_handler = Some(std::thread::spawn(move || {
             loop {
                 if cancel_reader.load(Ordering::Relaxed) {
-                    println!("Reader thread cancelled");
+                    log::debug!("Reader thread cancelled");
                     break;
                 }
 
@@ -142,7 +151,7 @@ impl StreamPlayer {
                         let video_stream_idx = match video_stream_idx {
                             Some(idx) => idx,
                             None => {
-                                println!("No video stream found");
+                                log::warn!("No video stream found");
                                 std::thread::sleep(Duration::from_secs(1));
                                 continue;
                             }
@@ -152,7 +161,7 @@ impl StreamPlayer {
                         let mut frame_rate =
                             video_stream.rate().numerator() / video_stream.rate().denominator();
                         if frame_rate < 5 {
-                            println!("Suspicious frame rate {frame_rate}, falling back to 30");
+                            log::warn!("Suspicious frame rate {frame_rate}, falling back to 30");
                             frame_rate = 30;
                         }
                         let video_time_base = {
@@ -167,7 +176,7 @@ impl StreamPlayer {
                             1.0 / 90000.0
                         };
 
-                        println!(
+                        log::debug!(
                             "FRAME RATE: {frame_rate}, VIDEO_TIME_BASE: {video_time_base:.6}, AUDIO_TIME_BASE: {audio_time_base:.6}"
                         );
 
@@ -199,7 +208,7 @@ impl StreamPlayer {
                         ) {
                             Ok(vp) => vp,
                             Err(e) => {
-                                println!("Failed to create VideoStream: {:?}", e);
+                                log::error!("Failed to create VideoStream: {e:?}");
                                 std::thread::sleep(Duration::from_secs(1));
                                 continue;
                             }
@@ -214,7 +223,7 @@ impl StreamPlayer {
                             ) {
                                 Ok(at) => Some(at),
                                 Err(e) => {
-                                    println!("Failed to create audio transcoder: {:?}", e);
+                                    log::error!("Failed to create audio transcoder: {e:?}");
                                     None
                                 }
                             }
@@ -255,7 +264,7 @@ impl StreamPlayer {
                                 break;
                             }
                             if packet.is_corrupt() {
-                                println!("Got corrupt packet, restarting stream reader");
+                                log::warn!("Got corrupt packet, restarting stream reader");
                                 break;
                             }
 
@@ -263,10 +272,10 @@ impl StreamPlayer {
                                 ffmpeg_next::media::Type::Video => {
                                     video_player.try_send_packet(packet);
                                 }
-                                ffmpeg_next::media::Type::Audio => {
-                                    if audio_pkt_tx.send(packet).is_err() {
-                                        break;
-                                    }
+                                ffmpeg_next::media::Type::Audio
+                                    if audio_pkt_tx.send(packet).is_err() =>
+                                {
+                                    break;
                                 }
                                 _ => {}
                             }
@@ -275,7 +284,7 @@ impl StreamPlayer {
                         drop(video_player);
                     }
                     Err(e) => {
-                        println!("Failed to open stream input: {:?}, retrying in 1s...", e);
+                        log::warn!("Failed to open stream input: {e:?}, retrying in 1s...");
                         std::thread::sleep(Duration::from_secs(1));
                     }
                 }

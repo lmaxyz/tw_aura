@@ -61,16 +61,11 @@ impl AudioTranscoder {
     pub fn drain(&mut self) -> AudioChunk {
         let mut pcm = Vec::new();
         let mut pts = 0i64;
-        loop {
-            match self.receive_and_resample() {
-                Ok(chunk) => {
-                    if pts == 0 {
-                        pts = chunk.pts;
-                    }
-                    pcm.extend(chunk.data);
-                }
-                Err(_) => break,
+        while let Ok(chunk) = self.receive_and_resample() {
+            if pts == 0 {
+                pts = chunk.pts;
             }
+            pcm.extend(chunk.data);
         }
         AudioChunk { data: pcm, pts }
     }

@@ -109,7 +109,7 @@ impl VideoStream {
                     Err(_) => break,
                 };
 
-                if let Err(_) = transcoder.send_packet_to_decoder(&packet) {
+                if transcoder.send_packet_to_decoder(&packet).is_err() {
                     continue;
                 }
 
@@ -125,7 +125,7 @@ impl VideoStream {
             }
 
             // Drain remaining frames from decoder.
-            let _ = transcoder.send_eof();
+            transcoder.send_eof();
             while let Ok(raw_frame) = transcoder.receive_decoded_frames() {
                 let pts = raw_frame.pts().unwrap_or(0);
                 if let Some(yuv) = process_frame(raw_frame) {

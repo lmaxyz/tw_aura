@@ -5,11 +5,17 @@ const AUTH_URL: &str = "https://twitchaddon.page.link/1Sk5";
 #[derive(Default)]
 pub struct AuthView {
     pub token_input: String,
+    /// Пояснение, почему требуется авторизация (например, истёкший токен).
+    pub notice: Option<String>,
 }
 
 impl AuthView {
     pub fn ui(&mut self, ui: &mut Ui, on_token_saved: &mut Option<String>) {
         ui.heading("Authentication Required");
+        if let Some(notice) = &self.notice {
+            ui.colored_label(egui::Color32::YELLOW, notice);
+            ui.add_space(8.0);
+        }
         ui.label("Please authenticate with Twitch to use this app.");
         ui.add_space(8.0);
 
@@ -36,13 +42,13 @@ impl AuthView {
         ui.add_space(8.0);
         if ui.button("Save Token").clicked() && !self.token_input.trim().is_empty() {
             let token = self.token_input.trim().to_owned();
-            let config = crate::config::Config {
-                access_token: Some(token.clone()),
-                last_quality: None,
-            };
+            let mut config = crate::config::Config::load().unwrap_or_default();
+            config.access_token = Some(token.clone());
             if let Err(e) = config.save() {
-                eprintln!("Failed to save config: {}", e);
+                log::error!("Failed to save config: {e}");
             } else {
+                self.notice = None;
+                self.token_input.clear();
                 *on_token_saved = Some(token);
             }
         }

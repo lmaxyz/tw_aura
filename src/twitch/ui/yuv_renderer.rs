@@ -189,16 +189,16 @@ impl YuvRendererInner {
             gl.shader_source(vs, vs_source);
             gl.compile_shader(vs);
             if !gl.get_shader_compile_status(vs) {
-                let log = gl.get_shader_info_log(vs);
-                eprintln!("YUV vertex shader compile error: {}", log);
+                let info_log = gl.get_shader_info_log(vs);
+                log::error!("YUV vertex shader compile error: {info_log}");
             }
 
             let fs = gl.create_shader(glow::FRAGMENT_SHADER).unwrap();
             gl.shader_source(fs, fs_source);
             gl.compile_shader(fs);
             if !gl.get_shader_compile_status(fs) {
-                let log = gl.get_shader_info_log(fs);
-                eprintln!("YUV fragment shader compile error: {}", log);
+                let info_log = gl.get_shader_info_log(fs);
+                log::error!("YUV fragment shader compile error: {info_log}");
             }
 
             let prog = gl.create_program().unwrap();
@@ -206,8 +206,8 @@ impl YuvRendererInner {
             gl.attach_shader(prog, fs);
             gl.link_program(prog);
             if !gl.get_program_link_status(prog) {
-                let log = gl.get_program_info_log(prog);
-                eprintln!("YUV program link error: {}", log);
+                let info_log = gl.get_program_info_log(prog);
+                log::error!("YUV program link error: {info_log}");
             }
 
             gl.detach_shader(prog, vs);

@@ -1,11 +1,60 @@
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use egui::{RichText, Ui, Widget};
 use futures::TryStreamExt;
 use twitch_api::helix::HelixClient;
 use twitch_api::helix::search::Channel;
 use twitch_api::helix::streams::Stream;
+use twitch_api::helix::{ClientRequestError, HelixRequestGetError};
+use twitch_api::twitch_oauth2::tokens::errors::ValidationError;
 use twitch_api::twitch_oauth2::{AccessToken, UserToken};
+
+#[derive(Debug)]
+pub enum FetchError {
+    /// Токен истёк или отозван — требуется повторная авторизация.
+    Unauthorized,
+    Other(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FetchError::Unauthorized => {
+                write!(f, "Токен доступа истёк или недействителен")
+            }
+            FetchError::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for FetchError {}
+
+fn map_validation_error<RE: std::error::Error + Send + Sync + 'static>(
+    e: ValidationError<RE>,
+) -> FetchError {
+    match e {
+        ValidationError::NotAuthorized => FetchError::Unauthorized,
+        other => FetchError::Other(other.to_string()),
+    }
+}
+
+fn map_request_error(e: ClientRequestError<reqwest::Error>) -> FetchError {
+    match e {
+        ClientRequestError::HelixRequestGetError(HelixRequestGetError::Error {
+            status, ..
+        }) if status.as_u16() == 401 => FetchError::Unauthorized,
+        other => FetchError::Other(other.to_string()),
+    }
+}
+
+fn helix_client() -> HelixClient<'static, reqwest::Client> {
+    let reqwest_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
+    HelixClient::with_client(reqwest_client)
+}
 
 pub fn streams_list_ui(ui: &mut Ui, streams: Arc<RwLock<Vec<Stream>>>) -> Option<Stream> {
     let mut selected_stream = None;
@@ -98,13 +147,13 @@ pub fn channels_list_ui(ui: &mut Ui, channels: Arc<RwLock<Vec<Channel>>>) -> Opt
     selected_channel
 }
 
-pub fn get_streams(access_token: &str) -> Vec<Stream> {
+pub fn get_streams(access_token: &str) -> Result<Vec<Stream>, FetchError> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .map_err(|e| FetchError::Other(format!("Failed to create tokio runtime: {e}")))?
         .block_on(async {
-            let client: HelixClient<reqwest::Client> = HelixClient::default();
+            let client = helix_client();
             let user_token = UserToken::from_existing(
                 &client,
                 AccessToken::new(access_token.into()),
@@ -112,22 +161,26 @@ pub fn get_streams(access_token: &str) -> Vec<Stream> {
                 None,
             )
             .await
-            .unwrap();
+            .map_err(map_validation_error)?;
             client
                 .get_followed_streams(&user_token)
                 .try_collect()
                 .await
-                .unwrap()
+                .map_err(map_request_error)
         })
 }
 
-pub fn search_channels(access_token: &str, query: &str, live_only: bool) -> Vec<Channel> {
+pub fn search_channels(
+    access_token: &str,
+    query: &str,
+    live_only: bool,
+) -> Result<Vec<Channel>, FetchError> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .map_err(|e| FetchError::Other(format!("Failed to create tokio runtime: {e}")))?
         .block_on(async {
-            let client: HelixClient<reqwest::Client> = HelixClient::default();
+            let client = helix_client();
             let user_token = UserToken::from_existing(
                 &client,
                 AccessToken::new(access_token.into()),
@@ -135,11 +188,11 @@ pub fn search_channels(access_token: &str, query: &str, live_only: bool) -> Vec<
                 None,
             )
             .await
-            .unwrap();
+            .map_err(map_validation_error)?;
             client
                 .search_channels(query, live_only, &user_token)
                 .try_collect()
                 .await
-                .unwrap()
+                .map_err(map_request_error)
         })
 }

@@ -1,7 +1,6 @@
 mod audio;
 mod audio_decoder;
 pub mod player;
-pub mod utils;
 pub mod video;
 mod video_decoder;
 

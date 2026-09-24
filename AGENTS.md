@@ -24,6 +24,7 @@ TwAura (`tw_aura`) — это неофициальный клиент для Twi
 - **Аудиовывод:** `libpulse-binding` / `libpulse-simple-binding`.
 - **Парсинг HLS:** `m3u8-rs`.
 - **Сериализация:** `serde`, `serde_json`.
+- **Логирование:** `log` + `env_logger` (уровни через `RUST_LOG`, `println!` в коде не используются).
 - **Обработка изображений:** `egui_extras` (загрузка превью через HTTP).
 - **Каналы между потоками:** `std::sync::mpsc` (SyncSender/Receiver) и `ring-channel`.
 
@@ -43,8 +44,7 @@ src/
     │   ├── video.rs     # VideoStream — декодирование видео (YUV420P) и paced-вывод кадров
     │   ├── video_decoder.rs # Тонкая обёртка над FFmpeg video decoder
     │   ├── audio.rs     # AudioStream — вывод аудио через PulseAudio
-    │   ├── audio_decoder.rs # Декодирование и ресемплинг аудио в S16LE 48kHz stereo
-    │   └── utils.rs     # Вспомогательная печать метаданных потока
+    │   └── audio_decoder.rs # Декодирование и ресемплинг аудио в S16LE 48kHz stereo
     └── ui/              # UI-компоненты
         ├── mod.rs
         ├── auth.rs            # Экран ввода access token

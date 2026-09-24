@@ -1,6 +1,6 @@
 [package]
 name = "tw_aura"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -37,6 +37,7 @@ egui-rotate = "0.1.3"
 anyhow = "1.0"
 libpulse-binding = "2.30.1"
 libpulse-simple-binding = "2.29.0"
+log = "0.4"
 env_logger = "0.11"
 
 [features]

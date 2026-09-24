@@ -8,12 +8,12 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn config_path() -> PathBuf {
-        app_data_dir().join("tw_aura.conf")
+    pub fn config_path() -> Option<PathBuf> {
+        app_data_dir().map(|dir| dir.join("tw_aura.conf"))
     }
 
     pub fn load() -> Option<Self> {
-        let path = Self::config_path();
+        let path = Self::config_path()?;
         if !path.exists() {
             return None;
         }
@@ -22,7 +22,9 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {
-        let path = Self::config_path();
+        let path = Self::config_path().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "home directory is not available")
+        })?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -32,7 +34,6 @@ impl Config {
     }
 }
 
-pub fn app_data_dir() -> PathBuf {
-    let home_dir = std::env::home_dir().unwrap();
-    home_dir.join(".local/share/com.lmaxyz/TwAura")
+pub fn app_data_dir() -> Option<PathBuf> {
+    std::env::home_dir().map(|home| home.join(".local/share/com.lmaxyz/TwAura"))
 }

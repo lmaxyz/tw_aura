@@ -30,20 +30,18 @@ impl Clone for AudioStream {
 }
 
 impl AudioStream {
-    pub fn new() -> Result<Self, String> {
-        println!("AudioStream::new: initializing...");
-        Ok(Self {
+    pub fn new() -> Self {
+        Self {
             inner: Arc::new(AudioStreamInner {
                 audio_bytes_consumed: AtomicU64::new(0),
                 last_audio_pts: AtomicI64::new(0),
             }),
-        })
+        }
     }
 
     pub fn stop(&self) {
         self.inner.audio_bytes_consumed.store(0, Ordering::Relaxed);
         self.inner.last_audio_pts.store(0, Ordering::Relaxed);
-        println!("AudioStream::stop: counters reset");
     }
 
     /// PTS последнего аудио-чанка, полученного фидер-потоком.
@@ -59,7 +57,6 @@ impl AudioStream {
     }
 
     pub fn start(&self, audio_rx: std::sync::mpsc::Receiver<AudioChunk>, _audio_time_base: f64) {
-        println!("AudioStream::start: beginning start sequence");
         self.stop();
 
         let inner = self.inner.clone();
@@ -72,25 +69,23 @@ impl AudioStream {
             };
 
             if !spec.is_valid() {
-                eprintln!("AudioStream::start: invalid sample spec");
+                log::error!("AudioStream::start: invalid sample spec");
                 return;
             }
 
             let simple = match create_simple(&spec) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("Failed to create PulseAudio connection: {}", e);
+                    log::error!("Failed to create PulseAudio connection: {e}");
                     return;
                 }
             };
-
-            println!("AudioStream::start: playback stream created successfully");
 
             loop {
                 match audio_rx.recv() {
                     Ok(chunk) => {
                         if let Err(e) = simple.write(&chunk.data) {
-                            eprintln!("PulseAudio write error: {}", e);
+                            log::error!("PulseAudio write error: {e}");
                             break;
                         }
                         inner
@@ -99,14 +94,14 @@ impl AudioStream {
                         inner.last_audio_pts.store(chunk.pts, Ordering::Relaxed);
                     }
                     Err(_) => {
-                        println!("Audio feed: audio_rx disconnected, exiting");
+                        log::debug!("Audio feed: audio_rx disconnected, exiting");
                         break;
                     }
                 }
             }
 
             if let Err(e) = simple.drain() {
-                eprintln!("PulseAudio drain error: {}", e);
+                log::error!("PulseAudio drain error: {e}");
             }
         });
     }
@@ -123,15 +118,9 @@ fn create_simple(spec: &Spec) -> Result<Simple, libpulse_binding::error::PAErr> 
         None,
         None,
     ) {
-        Ok(s) => {
-            println!("AudioStream: connected via default server");
-            Ok(s)
-        }
+        Ok(s) => Ok(s),
         Err(e) => {
-            println!(
-                "AudioStream: default connection failed ({}), trying fallback socket...",
-                e
-            );
+            log::warn!("AudioStream: default connection failed ({e}), trying fallback socket...");
             if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
                 let path = std::path::PathBuf::from(runtime_dir).join("pulse/native");
                 if path.exists() {

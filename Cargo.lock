@@ -4674,7 +4674,7 @@ dependencies = [
 
 [[package]]
 name = "tw_aura"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "aurora_egui",
@@ -4691,6 +4691,7 @@ dependencies = [
  "image",
  "libpulse-binding",
  "libpulse-simple-binding",
+ "log",
  "m3u8-rs",
  "reqwest",
  "ring-channel",

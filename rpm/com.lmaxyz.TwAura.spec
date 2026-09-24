@@ -3,7 +3,7 @@
 
 Name:       com.lmaxyz.TwAura
 Summary:    Неофициальный клиент для Twitch
-Version:    0.2.1
+Version:    0.3.0
 Release:    1
 License:    Apache-2.0
 URL:        https://github.com/lmaxyz
