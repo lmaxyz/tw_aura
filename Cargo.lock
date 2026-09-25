@@ -128,7 +128,7 @@ dependencies = [
  "accesskit_unix",
  "accesskit_windows",
  "raw-window-handle",
- "winit",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -523,7 +523,7 @@ source = "git+https://github.com/auroraos-rs/aurora-gui#80b525473ad631b2cab4415e
 dependencies = [
  "log",
  "maliit",
- "winit",
+ "winit 0.30.13 (git+https://github.com/lmaxyz/winit?branch=rm_maliit)",
 ]
 
 [[package]]
@@ -543,7 +543,7 @@ dependencies = [
  "glutin-winit",
  "log",
  "thiserror 2.0.21",
- "winit",
+ "winit 0.30.13 (git+https://github.com/lmaxyz/winit?branch=rm_maliit)",
 ]
 
 [[package]]
@@ -1176,6 +1176,12 @@ version = "0.1.1"
 source = "git+https://github.com/lmaxyz/winit?branch=rm_maliit#e9acf258174177b0cfac006f8b347e4a04deb3a0"
 
 [[package]]
+name = "dpi"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
 name = "ecolor"
 version = "0.36.2"
 source = "git+https://github.com/lmaxyz/egui/?branch=aurora_winit#eceb3139455aaf8ddddbb3b5d0a13afcdbf74d65"
@@ -1214,7 +1220,7 @@ dependencies = [
  "web-sys",
  "web-time",
  "windows-sys 0.61.2",
- "winit",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -1261,7 +1267,7 @@ dependencies = [
  "type-map",
  "web-time",
  "wgpu",
- "winit",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -1282,7 +1288,7 @@ dependencies = [
  "smithay-clipboard",
  "web-time",
  "webbrowser",
- "winit",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -1312,7 +1318,7 @@ dependencies = [
  "glow",
  "log",
  "profiling",
- "winit",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -1917,7 +1923,7 @@ dependencies = [
  "cfg_aliases",
  "glutin",
  "raw-window-handle",
- "winit",
+ "winit 0.30.13 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -5883,6 +5889,58 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
+dependencies = [
+ "ahash",
+ "android-activity",
+ "atomic-waker",
+ "bitflags 2.13.2",
+ "block2 0.5.1",
+ "bytemuck",
+ "calloop 0.13.0",
+ "cfg_aliases",
+ "concurrent-queue",
+ "core-foundation",
+ "core-graphics",
+ "cursor-icon",
+ "dpi 0.1.2",
+ "js-sys",
+ "libc",
+ "memmap2",
+ "ndk",
+ "objc2 0.5.2",
+ "objc2-app-kit 0.2.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit 0.2.2",
+ "orbclient",
+ "percent-encoding",
+ "pin-project",
+ "raw-window-handle",
+ "redox_syscall 0.4.1",
+ "rustix 0.38.44",
+ "sctk-adwaita",
+ "smithay-client-toolkit 0.19.2",
+ "smol_str",
+ "tracing",
+ "unicode-segmentation",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-plasma",
+ "web-sys",
+ "web-time",
+ "windows-sys 0.52.0",
+ "x11-dl",
+ "x11rb",
+ "xkbcommon-dl",
+]
+
+[[package]]
+name = "winit"
+version = "0.30.13"
 source = "git+https://github.com/lmaxyz/winit?branch=rm_maliit#e9acf258174177b0cfac006f8b347e4a04deb3a0"
 dependencies = [
  "ahash",
@@ -5897,7 +5955,7 @@ dependencies = [
  "core-foundation",
  "core-graphics",
  "cursor-icon",
- "dpi",
+ "dpi 0.1.1",
  "js-sys",
  "libc",
  "memmap2",
