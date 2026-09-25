@@ -104,8 +104,7 @@ impl MyApp {
         let thread_login = login.clone();
         std::thread::spawn(move || {
             let preferred = Config::load().and_then(|c| c.last_quality);
-            let result =
-                StreamPlayer::new(&thread_login, preferred).map_err(|e| e.to_string());
+            let result = StreamPlayer::new(&thread_login, preferred).map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
         self.pending_player = Some(PendingPlayer { login, rx });
@@ -128,8 +127,7 @@ impl MyApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.pending_player = None;
-                self.player_error =
-                    Some("Внутренняя ошибка при подключении к стриму".to_string());
+                self.player_error = Some("Внутренняя ошибка при подключении к стриму".to_string());
             }
         }
     }
@@ -145,9 +143,8 @@ impl MyApp {
         if let Err(e) = config.save() {
             log::error!("Failed to save config: {e}");
         }
-        self.auth_view.notice = Some(
-            "Срок действия токена истёк. Пожалуйста, авторизуйтесь заново.".to_string(),
-        );
+        self.auth_view.notice =
+            Some("Срок действия токена истёк. Пожалуйста, авторизуйтесь заново.".to_string());
     }
 
     /// Проверяет слот ошибки фоновой загрузки. При Unauthorized сбрасывает
@@ -186,7 +183,7 @@ impl MyApp {
             egui::Frame::central_panel(ui.style())
         };
 
-        central_panel.frame(main_frame).show_inside(ui, |ui| {
+        central_panel.frame(main_frame).show(ui, |ui| {
             if let Some(player_view) = self.player_view.as_mut() {
                 let response = player_view.ui(ui, is_landscape, rotation);
                 if response.back_clicked {
@@ -250,13 +247,14 @@ impl MyApp {
                 full_rect.max,
             );
 
-            ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
-                match self.current_tab {
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(content_rect),
+                |ui| match self.current_tab {
                     Tab::Main => self.show_main_tab(ui),
                     Tab::Subs => self.show_subs_tab(ui),
                     Tab::Find => self.show_find_tab(ui),
-                }
-            });
+                },
+            );
 
             // Нижняя навигационная панель: растянута на всю ширину, кнопки
             // делят её на равные части без зазоров между ними.
@@ -283,10 +281,7 @@ impl MyApp {
                         )
                         .frame(selected);
                         let width = column.available_width();
-                        if column
-                            .add_sized(vec2(width, NAV_HEIGHT), button)
-                            .clicked()
-                        {
+                        if column.add_sized(vec2(width, NAV_HEIGHT), button).clicked() {
                             self.current_tab = tab;
                         }
                     }
